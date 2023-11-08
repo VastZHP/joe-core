@@ -6,6 +6,7 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/math/SafeMathUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC721/IERC721Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/SafeERC20Upgradeable.sol";
 
 /**
@@ -85,6 +86,9 @@ contract StableJoeStaking is Initializable, OwnableUpgradeable {
     /// @dev Info of each user that stakes JOE
     mapping(address => UserInfo) private userInfo;
 
+    /// @dev Smol Joes contract address
+    IERC721Upgradeable public smolJoes;
+
     /// @notice Emitted when a user deposits JOE
     event Deposit(address indexed user, uint256 amount, uint256 fee);
 
@@ -105,6 +109,7 @@ contract StableJoeStaking is Initializable, OwnableUpgradeable {
 
     /// @notice Emitted when owner removes a token from the reward tokens list
     event RewardTokenRemoved(address token);
+
 
     /// @notice Emitted when owner sweeps a token
     event TokenSwept(address token, address to, uint256 amount);
@@ -129,6 +134,7 @@ contract StableJoeStaking is Initializable, OwnableUpgradeable {
         joe = _joe;
     }
 
+
     /**
      * @notice Initialize a new StableJoeStaking contract
      * @dev This contract needs to receive an ERC20 `_rewardToken` in order to distribute them
@@ -139,10 +145,12 @@ contract StableJoeStaking is Initializable, OwnableUpgradeable {
     function initialize(
         IERC20Upgradeable _rewardToken,
         address _feeCollector,
-        uint256 _depositFeePercent
+        uint256 _depositFeePercent,
+        IERC721Upgradeable _smolJoes
     ) external initializer {
         __Ownable_init();
         require(address(_rewardToken) != address(0), "StableJoeStaking: reward token can't be address(0)");
+
         require(_feeCollector != address(0), "StableJoeStaking: fee collector can't be address(0)");
         require(_depositFeePercent <= 5e17, "StableJoeStaking: max deposit fee can't be greater than 50%");
 
@@ -160,7 +168,11 @@ contract StableJoeStaking is Initializable, OwnableUpgradeable {
     function deposit(uint256 _amount) external nonReentrant {
         UserInfo storage user = userInfo[_msgSender()];
 
-        uint256 _fee = _amount.mul(depositFeePercent).div(DEPOSIT_FEE_PERCENT_PRECISION);
+        uint256 _fee;
+        // Only EOAs holding Smol Joes are exempt from paying the deposit fee
+        if (address(smolJoes) != 0 && (smolJoes.balanceOf(_msgSender()) == 0 || _msgSender() != tx.origin)) {
+            _fee = _amount.mul(depositFeePercent).div(DEPOSIT_FEE_PERCENT_PRECISION);
+        }
         uint256 _amountMinusFee = _amount.sub(_fee);
 
         uint256 _previousAmount = user.amount;
@@ -189,9 +201,9 @@ contract StableJoeStaking is Initializable, OwnableUpgradeable {
 
         internalJoeBalance = internalJoeBalance.add(_amountMinusFee);
 
+
         if (_fee > 0) joe.safeTransferFrom(_msgSender(), feeCollector, _fee);
         if (_amountMinusFee > 0) joe.safeTransferFrom(_msgSender(), address(this), _amountMinusFee);
-
         emit Deposit(_msgSender(), _amountMinusFee, _fee);
     }
 
@@ -260,6 +272,18 @@ contract StableJoeStaking is Initializable, OwnableUpgradeable {
         uint256 oldFee = depositFeePercent;
         depositFeePercent = _depositFeePercent;
         emit DepositFeeChanged(_depositFeePercent, oldFee);
+    }
+
+    /**
+     * @notice Initialize the Smol Joes address
+     * @dev This function was added to be able to set Smol Joes during an upgrade
+     * as the contract was already initialized
+     * @param _smolJoes The Smol Joes contract address
+     */
+    function setSmolJoes(IERC721Upgradeable _smolJoes) external onlyOwner {
+        require(address(_smolJoes) != address(0), "StableJoeStaking: smol joes can't be address(0)");
+        smolJoes = _smolJoes;
+        emit SmolJoesInitialized(_smolJoes, smolJoes);
     }
 
     /**
