@@ -382,6 +382,8 @@ describe("BoostedMasterChefJoe", function () {
     await this.bmc.connect(this.bob).deposit(0, 100)
   })
 
+
+
   it.only("should allow deposit", async function () {
 
     this.lp1 = await this.ERC20Mock.deploy("LPToken", "LP", "100000000000000000000")
