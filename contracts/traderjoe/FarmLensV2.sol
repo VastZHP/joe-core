@@ -47,6 +47,16 @@ interface IBoostedMasterchef {
 
     function userInfo(uint256 _pid, address user) external view returns (UserInfo memory);
 
+    function pendingTokens(uint256 _pid, address user)
+        external
+        view
+        returns (
+            uint256,
+            address,
+            string memory,
+            uint256
+        );
+
     function poolLength() external view returns (uint256);
 
     function poolInfo(uint256 pid) external view returns (PoolInfo memory);
@@ -90,9 +100,14 @@ contract FarmLensV2 {
         uint256 chefBalanceScaled;
         uint256 chefTotalAlloc;
         uint256 chefJoePerSec;
-        uint256 baseAPR;
-        uint256 boostedAPR;
-        uint256 boostFactor;
+        uint256 baseApr;
+        uint256 averageBoostedApr;
+        uint256 veJoeShareBp;
+        uint256 joePriceUsd;
+        uint256 userLp;
+        uint256 userPendingJoe;
+        uint256 userBoostedApr;
+        uint256 userFactorShare;
     }
 
     struct AllFarmData {
@@ -115,6 +130,11 @@ contract FarmLensV2 {
         uint256 joePerSec;
     }
 
+    /// @dev 365 * 86400, hard coding it for gas optimisation
+    uint256 private constant SEC_PER_YEAR = 31536000;
+    uint256 private constant BP_PRECISION = 10_000;
+    uint256 private constant PRECISION = 1e18;
+
     address public immutable joe; // 0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd;
     address public immutable wavax; // 0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7;
     IJoePair public immutable wavaxUsdte; // 0xeD8CBD9F0cE3C6986b22002F03c6475CEb7a6256
@@ -124,6 +144,9 @@ contract FarmLensV2 {
     IMasterChef public immutable chefv2; // 0xd6a4F121CA35509aF06A0Be99093d08462f53052
     IMasterChef public immutable chefv3; // 0x188bED1968b795d5c9022F6a0bb5931Ac4c18F00
     IBoostedMasterchef public immutable bmcj; // Not deployed yet
+    bool private immutable isWavaxToken1InWavaxUsdte;
+    bool private immutable isWavaxToken1InWavaxUsdce;
+    bool private immutable isWavaxToken1InWavaxUsdc;
 
     constructor(
         address _joe,
@@ -145,9 +168,13 @@ contract FarmLensV2 {
         chefv2 = _chefv2;
         chefv3 = _chefv3;
         bmcj = _bmcj;
+
+        isWavaxToken1InWavaxUsdte = _wavaxUsdte.token1() == _wavax;
+        isWavaxToken1InWavaxUsdce = _wavaxUsdce.token1() == _wavax;
+        isWavaxToken1InWavaxUsdc = _wavaxUsdc.token1() == _wavax;
     }
 
-    /// @notice Returns the price of avax in usd
+    /// @notice Returns the price of avax in Usd
     /// @return uint256 the avax price, scaled to 18 decimals
     function getAvaxPrice() external view returns (uint256) {
         return _getAvaxPrice();
@@ -160,11 +187,11 @@ contract FarmLensV2 {
         return _getDerivedAvaxPriceOfToken(token);
     }
 
-    /// @notice Returns the USD price of token, it needs to be paired with wavax
+    /// @notice Returns the Usd price of token, it needs to be paired with wavax
     /// @param token The address of the token
-    /// @return uint256 the USD price of token, scaled to 18 decimals
+    /// @return uint256 the Usd price of token, scaled to 18 decimals
     function getTokenPrice(address token) external view returns (uint256) {
-        return _getDerivedAvaxPriceOfToken(token) * _getAvaxPrice();
+        return _getDerivedAvaxPriceOfToken(token).mul(_getAvaxPrice()) / 1e18;
     }
 
     /// @notice Returns the farm pairs data for MCV2 and MCV3
@@ -195,7 +222,7 @@ contract FarmLensV2 {
         require(chef == bmcj, "FarmLensV2: Only for BMCJ");
 
         uint256 avaxPrice = _getAvaxPrice();
-        uint256 joePrice = _getDerivedAvaxPriceOfToken(joe).mul(avaxPrice).div(1e18);
+        uint256 joePrice = _getDerivedAvaxPriceOfToken(joe).mul(avaxPrice) / PRECISION;
         return _getBMCJFarmInfos(avaxPrice, joePrice, user, whitelistedPids);
     }
 
@@ -214,36 +241,44 @@ contract FarmLensV2 {
         AllFarmData memory allFarmData;
 
         uint256 avaxPrice = _getAvaxPrice();
-        uint256 joePrice = _getDerivedAvaxPriceOfToken(joe);
+        uint256 joePrice = _getDerivedAvaxPriceOfToken(joe).mul(avaxPrice) / PRECISION;
 
         allFarmData.avaxPriceUsd = avaxPrice;
         allFarmData.joePriceUsd = joePrice;
 
         allFarmData.totalAllocChefV2 = chefv2.totalAllocPoint();
-        allFarmData.joePerSecChefV2 = chefv2.joePerSec();
+        allFarmData.joePerSecChefV2 = _joePerSec(address(chefv2));
 
         allFarmData.totalAllocChefV3 = chefv3.totalAllocPoint();
-        allFarmData.joePerSecChefV3 = chefv3.joePerSec();
+        allFarmData.joePerSecChefV3 = _joePerSec(address(chefv3));
 
         allFarmData.totalAllocBMCJ = bmcj.totalAllocPoint();
-        allFarmData.joePerSecBMCJ = bmcj.joePerSec();
+        allFarmData.joePerSecBMCJ = _joePerSec(address(bmcj));
 
         allFarmData.farmInfosV2 = _getMCFarmInfos(chefv2, avaxPrice, whitelistedPidsV2);
         allFarmData.farmInfosV3 = _getMCFarmInfos(chefv3, avaxPrice, whitelistedPidsV3);
-        allFarmData.farmInfosBMCJ = _getBMCJFarmInfos(joePrice, avaxPrice, user, whitelistedPidsBMCJ);
+        allFarmData.farmInfosBMCJ = _getBMCJFarmInfos(avaxPrice, joePrice, user, whitelistedPidsBMCJ);
 
         return allFarmData;
     }
 
-    /// @notice Returns the price of avax in usd internally
+    /// @notice Returns the joePerSec of a given MasterChef
+    /// @param mc The address of the MasterChef
+    function _joePerSec(address mc) internal view returns (uint256) {
+        try IMasterChef(mc).joePerSec() returns (uint256 joePerSec) {
+            return joePerSec;
+        } catch {
+            return 0;
+        }
+    }
+
+    /// @notice Returns the price of avax in Usd internally
     /// @return uint256 the avax price, scaled to 18 decimals
     function _getAvaxPrice() private view returns (uint256) {
-        // Hardcoding result of `IjoePair(wavaxUsdte).token0() != wavax`
-        // to save gas, same for wavaxUsdce and wavaxUsdc
         return
-            _getDerivedTokenPriceOfPair(wavaxUsdte, false).add(_getDerivedTokenPriceOfPair(wavaxUsdce, true)).add(
-                _getDerivedTokenPriceOfPair(wavaxUsdc, false)
-            ) / 3;
+            _getDerivedTokenPriceOfPair(wavaxUsdte, isWavaxToken1InWavaxUsdte)
+                .add(_getDerivedTokenPriceOfPair(wavaxUsdce, isWavaxToken1InWavaxUsdce))
+                .add(_getDerivedTokenPriceOfPair(wavaxUsdc, isWavaxToken1InWavaxUsdc)) / 3;
     }
 
     /// @notice Returns the derived price of token in the other token
@@ -256,9 +291,9 @@ contract FarmLensV2 {
         uint256 decimals1 = IERC20(pair.token1()).safeDecimals();
 
         if (derivedtoken0) {
-            return _scaleTo(reserve0, decimals1.add(18).sub(decimals0)).div(reserve1);
+            return reserve1 == 0 ? 0 : _scaleTo(reserve0, decimals1.add(18).sub(decimals0)).div(reserve1);
         } else {
-            return _scaleTo(reserve1, decimals0.add(18).sub(decimals1)).div(reserve0);
+            return reserve0 == 0 ? 0 : _scaleTo(reserve1, decimals0.add(18).sub(decimals1)).div(reserve0);
         }
     }
 
@@ -267,7 +302,7 @@ contract FarmLensV2 {
     /// @return uint256 the token derived price, scaled to 18 decimals
     function _getDerivedAvaxPriceOfToken(address token) private view returns (uint256) {
         if (token == wavax) {
-            return 1e18;
+            return PRECISION;
         }
         IJoePair pair = IJoePair(joeFactory.getPair(token, wavax));
         if (address(pair) == address(0)) {
@@ -303,21 +338,21 @@ contract FarmLensV2 {
         uint256 token0DerivedAvaxPrice;
         uint256 token1DerivedAvaxPrice;
         if (address(token0) == _wavax) {
-            token0DerivedAvaxPrice = 1e18;
+            token0DerivedAvaxPrice = PRECISION;
             token1DerivedAvaxPrice = _getDerivedTokenPriceOfPair(pair, true);
         } else if (address(token1) == _wavax) {
             token0DerivedAvaxPrice = _getDerivedTokenPriceOfPair(pair, false);
-            token1DerivedAvaxPrice = 1e18;
+            token1DerivedAvaxPrice = PRECISION;
         } else {
             token0DerivedAvaxPrice = _getDerivedAvaxPriceOfToken(address(token0));
             token1DerivedAvaxPrice = _getDerivedAvaxPriceOfToken(address(token1));
             // If one token isn't paired with wavax, then we hope that the second one is.
-            // E.g, TOKEN/USDC, token might not be paired with wavax, but USDC is.
+            // E.g, TOKEN/UsdC, token might not be paired with wavax, but UsdC is.
             // If both aren't paired with wavax, return 0
-            if (token0DerivedAvaxPrice == 0) return reserve1.mul(token1DerivedAvaxPrice).mul(2) / 1e18;
-            if (token1DerivedAvaxPrice == 0) return reserve0.mul(token0DerivedAvaxPrice).mul(2) / 1e18;
+            if (token0DerivedAvaxPrice == 0) return reserve1.mul(token1DerivedAvaxPrice).mul(2) / PRECISION;
+            if (token1DerivedAvaxPrice == 0) return reserve0.mul(token0DerivedAvaxPrice).mul(2) / PRECISION;
         }
-        return reserve0.mul(token0DerivedAvaxPrice).add(reserve1.mul(token1DerivedAvaxPrice)) / 1e18;
+        return reserve0.mul(token0DerivedAvaxPrice).add(reserve1.mul(token1DerivedAvaxPrice)) / PRECISION;
     }
 
     /// @notice Private function to return the farm pairs data for a given MasterChef (V2 or V3)
@@ -334,7 +369,7 @@ contract FarmLensV2 {
         FarmInfo[] memory farmInfos = new FarmInfo[](whitelistLength);
 
         uint256 chefTotalAlloc = chef.totalAllocPoint();
-        uint256 chefJoePerSec = chef.joePerSec();
+        uint256 chefJoePerSec = _joePerSec(address(chef));
 
         for (uint256 i; i < whitelistLength; i++) {
             uint256 pid = whitelistedPids[i];
@@ -373,7 +408,7 @@ contract FarmLensV2 {
         uint256 decimals = lpToken.decimals();
         uint256 totalSupplyScaled = _scaleTo(lpToken.totalSupply(), 18 - decimals);
         uint256 chefBalanceScaled = _scaleTo(lpToken.balanceOf(address(chef)), 18 - decimals);
-        uint256 reserveUSD = _getDerivedAvaxLiquidityOfPair(lpToken) * avaxPrice;
+        uint256 reserveUsd = _getDerivedAvaxLiquidityOfPair(lpToken).mul(avaxPrice) / PRECISION;
         IERC20 token0 = IERC20(lpToken.token0());
         IERC20 token1 = IERC20(lpToken.token1());
 
@@ -386,7 +421,7 @@ contract FarmLensV2 {
                 token1Address: address(token1),
                 token0Symbol: token0.safeSymbol(),
                 token1Symbol: token1.safeSymbol(),
-                reserveUsd: reserveUSD,
+                reserveUsd: reserveUsd,
                 totalSupplyScaled: totalSupplyScaled,
                 chefBalanceScaled: chefBalanceScaled,
                 chefAddress: address(chef),
@@ -407,7 +442,7 @@ contract FarmLensV2 {
         address user,
         uint256[] calldata whitelistedPids
     ) private view returns (FarmInfoBMCJ[] memory) {
-        GlobalInfo memory globalInfo = GlobalInfo(address(bmcj), bmcj.totalAllocPoint(), bmcj.joePerSec());
+        GlobalInfo memory globalInfo = GlobalInfo(address(bmcj), bmcj.totalAllocPoint(), _joePerSec(address(bmcj)));
 
         uint256 whitelistLength = whitelistedPids.length;
         FarmInfoBMCJ[] memory farmInfos = new FarmInfoBMCJ[](whitelistLength);
@@ -416,27 +451,21 @@ contract FarmLensV2 {
             uint256 pid = whitelistedPids[i];
             IBoostedMasterchef.PoolInfo memory pool = IBoostedMasterchef(globalInfo.chef).poolInfo(pid);
             IBoostedMasterchef.UserInfo memory userInfo;
-            if (user != address(0)) {
-                userInfo = IBoostedMasterchef(globalInfo.chef).userInfo(pid, user);
-            } else {
-                userInfo = IBoostedMasterchef.UserInfo({
-                    amount: pool.totalLpSupply,
-                    rewardDebt: 0,
-                    factor: pool.totalFactor
-                });
-            }
+            userInfo = IBoostedMasterchef(globalInfo.chef).userInfo(pid, user);
 
-            farmInfos[i] = _getBMCJFarmInfo(
-                avaxPrice,
-                globalInfo.joePerSec.mul(joePrice) / 1e18,
-                globalInfo.totalAlloc,
-                pool,
-                userInfo
-            );
             farmInfos[i].id = pid;
             farmInfos[i].chefAddress = globalInfo.chef;
             farmInfos[i].chefTotalAlloc = globalInfo.totalAlloc;
             farmInfos[i].chefJoePerSec = globalInfo.joePerSec;
+            farmInfos[i].joePriceUsd = joePrice;
+            _getBMCJFarmInfo(
+                avaxPrice,
+                globalInfo.joePerSec.mul(joePrice) / PRECISION,
+                user,
+                farmInfos[i],
+                pool,
+                userInfo
+            );
         }
 
         return farmInfos;
@@ -444,21 +473,20 @@ contract FarmLensV2 {
 
     /// @notice Helper function to return the farm info of a given pool of BMCJ
     /// @param avaxPrice The avax price as a parameter to save gas
-    /// @param usdPerSec The usd per sec emitted to BMCJ
-    /// @param pool The pool
-    /// @param userInfo The userInfo
-    /// @return farmInfo The information of all the whitelisted farms of MCV2 or MCV3
+    /// @param UsdPerSec The Usd per sec emitted to BMCJ
+    /// @param userAddress The address of the user
+    /// @param farmInfo The farmInfo of that pool
+    /// @param user The user information
     function _getBMCJFarmInfo(
         uint256 avaxPrice,
-        uint256 usdPerSec,
-        uint256 totalAlloc,
+        uint256 UsdPerSec,
+        address userAddress,
+        FarmInfoBMCJ memory farmInfo,
         IBoostedMasterchef.PoolInfo memory pool,
-        IBoostedMasterchef.UserInfo memory userInfo
-    ) private view returns (FarmInfoBMCJ memory farmInfo) {
-        uint256 reserveUSD;
+        IBoostedMasterchef.UserInfo memory user
+    ) private view {
         {
             IJoePair lpToken = IJoePair(address(pool.lpToken));
-            reserveUSD = _getDerivedAvaxLiquidityOfPair(lpToken).mul(avaxPrice);
             IERC20 token0 = IERC20(lpToken.token0());
             IERC20 token1 = IERC20(lpToken.token1());
 
@@ -468,34 +496,48 @@ contract FarmLensV2 {
             farmInfo.token1Address = address(token1);
             farmInfo.token0Symbol = token0.safeSymbol();
             farmInfo.token1Symbol = token1.safeSymbol();
-            farmInfo.reserveUsd = reserveUSD;
+            farmInfo.reserveUsd = _getDerivedAvaxLiquidityOfPair(lpToken).mul(avaxPrice) / PRECISION;
+            // LP is in 18 decimals, so it's already scaled for JLP
             farmInfo.totalSupplyScaled = lpToken.totalSupply();
             farmInfo.chefBalanceScaled = pool.totalLpSupply;
-            farmInfo.boostFactor = uint256(pool.veJoeShareBp).div(10_000 - pool.veJoeShareBp).add(10_000);
+            farmInfo.userLp = user.amount;
+            farmInfo.veJoeShareBp = pool.veJoeShareBp;
+            (farmInfo.userPendingJoe, , , ) = bmcj.pendingTokens(farmInfo.id, userAddress);
         }
 
-        // LP are always 18 decimals
+        if (
+            pool.totalLpSupply != 0 &&
+            farmInfo.totalSupplyScaled != 0 &&
+            farmInfo.chefTotalAlloc != 0 &&
+            farmInfo.reserveUsd != 0
+        ) {
+            uint256 poolUsdPerYear = UsdPerSec.mul(pool.allocPoint).mul(SEC_PER_YEAR) / farmInfo.chefTotalAlloc;
 
-        if (pool.totalLpSupply != 0 && totalAlloc != 0) {
-            uint256 userBalanceUSD = userInfo.amount.mul(reserveUSD).div(pool.totalLpSupply);
+            uint256 poolReserveUsd = farmInfo.reserveUsd.mul(farmInfo.chefBalanceScaled) / farmInfo.totalSupplyScaled;
 
-            if (userBalanceUSD == 0) {
-                return farmInfo;
-            }
+            if (poolReserveUsd == 0) return;
 
-            // 1e14 instead of 1e18 because we would have divided by 10_000 right after that
-            farmInfo.baseAPR = usdPerSec.mul(365 days * 1e14).mul(10_000 - pool.veJoeShareBp).mul(pool.allocPoint).div(
-                totalAlloc.mul(userBalanceUSD)
-            );
+            farmInfo.baseApr =
+                poolUsdPerYear.mul(BP_PRECISION - pool.veJoeShareBp).mul(PRECISION) /
+                poolReserveUsd /
+                BP_PRECISION;
 
             if (pool.totalFactor != 0) {
-                // We do the math in 2 steps to avoid
-                // StackTooDeep error
-                uint256 usdPerUserVeJoe = usdPerSec.mul(pool.veJoeShareBp).mul(userInfo.factor).mul(365 days * 1e14);
-                // Early div to prevent overflow
-                farmInfo.boostedAPR = usdPerUserVeJoe.div(pool.totalFactor).mul(pool.allocPoint).div(
-                    totalAlloc.mul(userBalanceUSD)
-                );
+                farmInfo.averageBoostedApr =
+                    poolUsdPerYear.mul(pool.veJoeShareBp).mul(PRECISION) /
+                    poolReserveUsd /
+                    BP_PRECISION;
+
+                if (user.amount != 0 && user.factor != 0 && pool.totalFactor != 0) {
+                    uint256 userLpUsd = user.amount.mul(farmInfo.reserveUsd) / pool.totalLpSupply;
+
+                    farmInfo.userBoostedApr =
+                        poolUsdPerYear.mul(pool.veJoeShareBp).mul(user.factor).div(pool.totalFactor).mul(PRECISION) /
+                        userLpUsd /
+                        BP_PRECISION;
+
+                    farmInfo.userFactorShare = user.factor.mul(PRECISION) / pool.totalFactor;
+                }
             }
         }
     }
