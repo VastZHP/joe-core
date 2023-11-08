@@ -3,6 +3,7 @@
 pragma solidity 0.6.12;
 pragma experimental ABIEncoderV2;
 
+
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/math/SafeMathUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/Initializable.sol";
@@ -201,7 +202,6 @@ contract BoostedMasterChefJoe is Initializable, OwnableUpgradeable, ReentrancyGu
         if (address(_rewarder) != address(0)) {
             _rewarder.onJoeReward(address(0), 0);
         }
-        // NOTE call massUpdatePool ? with a boolean ?
 
         massUpdatePools();
         totalAllocPoint = totalAllocPoint.add(_allocPoint);
@@ -209,6 +209,7 @@ contract BoostedMasterChefJoe is Initializable, OwnableUpgradeable, ReentrancyGu
         poolInfo.push(
             PoolInfo({
                 lpToken: _lpToken,
+
                 allocPoint: _allocPoint,
                 accJoePerShare: 0,
                 accJoePerFactorPerShare: 0,
@@ -279,6 +280,7 @@ contract BoostedMasterChefJoe is Initializable, OwnableUpgradeable, ReentrancyGu
         uint256 _pid,
         address _user /// NOTE TODO
     )
+
         external
         view
         returns (
@@ -291,6 +293,7 @@ contract BoostedMasterChefJoe is Initializable, OwnableUpgradeable, ReentrancyGu
         PoolInfo memory pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_user];
         uint256 accJoePerShare = pool.accJoePerShare;
+
         uint256 accJoePerFactorPerShare = pool.accJoePerFactorPerShare;
 
         if (
@@ -332,12 +335,15 @@ contract BoostedMasterChefJoe is Initializable, OwnableUpgradeable, ReentrancyGu
         // If it's a double reward farm, we return info about the bonus token
         if (address(pool.rewarder) != address(0)) {
             bonusTokenAddress = address(pool.rewarder.rewardToken());
+
             bonusTokenSymbol = IERC20(bonusTokenAddress).safeSymbol();
+
             pendingBonusToken = pool.rewarder.pendingTokens(_user);
         }
     }
 
     /// @notice Update reward variables for all pools. Be careful of gas spending!
+
     /// @param _pids Pool IDs of all to be updated. Make sure to update all active pools
     function massUpdatePools(uint256[] calldata _pids) external {
         /// NOTE to redo
