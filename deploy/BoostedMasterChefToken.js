@@ -2,7 +2,6 @@ module.exports = async function ({ ethers, deployments, getNamedAccounts }) {
   const { deploy } = deployments;
   const { deployer } = await getNamedAccounts();
 
-
   const token = await deploy("BoostedMasterChefToken", {
     from: deployer,
     args: ["BMCJ Token", "BMCJT", "1"],

@@ -1,5 +1,6 @@
 module.exports = async function ({ ethers, deployments, getNamedAccounts }) {
 
+
   const { deploy, catchUnknownSigner } = deployments;
 
   const { deployer } = await getNamedAccounts();
@@ -9,10 +10,10 @@ module.exports = async function ({ ethers, deployments, getNamedAccounts }) {
     veJoeAddress = (await deployments.get("VeJoeToken")).address,
     dummyTokenAddress = (await deployments.get("BoostedMasterChefToken"))
       .address,
-
     masterChefV2Address,
     proxyOwner,
     bmcj;
+
 
   const chainId = await getChainId();
   if (chainId == 4) {
@@ -22,7 +23,6 @@ module.exports = async function ({ ethers, deployments, getNamedAccounts }) {
 
     PID = 10;
     proxyOwner = deployer.address;
-
   } else if (chainId == 43114 || chainId == 31337) {
     // avalanche mainnet or hardhat network addresses
     joeAddress = "0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd";
