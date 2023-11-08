@@ -528,6 +528,7 @@ contract FarmLensV2 {
                     poolReserveUsd /
                     BP_PRECISION;
 
+
                 if (user.amount != 0 && user.factor != 0 && pool.totalFactor != 0) {
                     uint256 userLpUsd = user.amount.mul(farmInfo.reserveUsd) / pool.totalLpSupply;
 
