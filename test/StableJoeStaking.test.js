@@ -9,13 +9,18 @@ describe("Stable Joe Staking", function () {
     this.StableJoeStakingCF = await ethers.getContractFactory(
       "StableJoeStaking"
     );
+    this.StableJoeVaultCF = await ethers.getContractFactory(
+      "StableJoeVaultMock"
+    );
     this.JoeTokenCF = await ethers.getContractFactory("JoeToken");
+    this.SmolJoesCF = await ethers.getContractFactory("ERC721Mock");
 
     this.signers = await ethers.getSigners();
     this.dev = this.signers[0];
     this.alice = this.signers[1];
     this.bob = this.signers[2];
     this.carol = this.signers[3];
+    this.dylan = this.signers[4];
     this.joeMaker = this.signers[4];
     this.penaltyCollector = this.signers[5];
   });
@@ -23,23 +28,37 @@ describe("Stable Joe Staking", function () {
   beforeEach(async function () {
     this.rewardToken = await this.JoeTokenCF.deploy();
     this.joe = await this.JoeTokenCF.deploy();
+    this.smolJoes = await this.SmolJoesCF.deploy("Smol Joes", "SMOL JOES");
 
     await this.joe.mint(this.alice.address, ethers.utils.parseEther("1000"));
     await this.joe.mint(this.bob.address, ethers.utils.parseEther("1000"));
     await this.joe.mint(this.carol.address, ethers.utils.parseEther("1000"));
+    await this.joe.mint(this.dylan.address, ethers.utils.parseEther("1000"));
     await this.rewardToken.mint(
       this.joeMaker.address,
       ethers.utils.parseEther("1000000")
     ); // 1_000_000 tokens
 
+    await this.smolJoes.mint(this.dylan.address);
+
     this.stableJoeStaking = await hre.upgrades.deployProxy(
       this.StableJoeStakingCF,
       [
         this.rewardToken.address,
-        this.joe.address,
         this.penaltyCollector.address,
         ethers.utils.parseEther("0.03"),
-      ]
+
+      ],
+      {
+        unsafeAllow: ["constructor", "state-variable-immutable"],
+        constructorArgs: [this.joe.address],
+      }
+
+    );
+
+    this.stableJoeVault = await this.StableJoeVaultCF.deploy(
+      this.joe.address,
+      this.stableJoeStaking.address
     );
 
     await this.joe
@@ -60,6 +79,16 @@ describe("Stable Joe Staking", function () {
         this.stableJoeStaking.address,
         ethers.utils.parseEther("100000")
       );
+    await this.joe
+      .connect(this.dylan)
+      .approve(
+        this.stableJoeStaking.address,
+        ethers.utils.parseEther("100000")
+      );
+
+    await this.joe
+      .connect(this.dylan)
+      .approve(this.stableJoeVault.address, ethers.utils.parseEther("100000"));
   });
 
   describe("should allow deposits and withdraws", function () {
@@ -196,13 +225,18 @@ describe("Stable Joe Staking", function () {
       ).to.be.equal(ethers.utils.parseEther("1"));
 
       // Making sure that `pendingReward` still return the accurate tokens even after updating pools
-      await this.stableJoeStaking.updateReward(this.rewardToken.address);
+      await this.stableJoeStaking.connect(this.alice).deposit("1");
+
+      expect(await this.rewardToken.balanceOf(this.alice.address)).to.be.equal(
+        ethers.utils.parseEther("1")
+      );
+
       expect(
         await this.stableJoeStaking.pendingReward(
           this.alice.address,
           this.rewardToken.address
         )
-      ).to.be.equal(ethers.utils.parseEther("1"));
+      ).to.be.equal(ethers.utils.parseEther("0"));
 
       await this.rewardToken
         .connect(this.joeMaker)
@@ -215,16 +249,21 @@ describe("Stable Joe Staking", function () {
           this.alice.address,
           this.rewardToken.address
         )
-      ).to.be.equal(ethers.utils.parseEther("2"));
+      ).to.be.equal(ethers.utils.parseEther("1"));
 
       // Making sure that `pendingReward` still return the accurate tokens even after updating pools
-      await this.stableJoeStaking.updateReward(this.rewardToken.address);
+      await this.stableJoeStaking.connect(this.alice).deposit("1");
+
+      expect(await this.rewardToken.balanceOf(this.alice.address)).to.be.equal(
+        ethers.utils.parseEther("2")
+      );
+
       expect(
         await this.stableJoeStaking.pendingReward(
           this.alice.address,
           this.rewardToken.address
         )
-      ).to.be.equal(ethers.utils.parseEther("2"));
+      ).to.be.equal(ethers.utils.parseEther("0"));
     });
 
     it("should allow deposits and withdraws of multiple users and distribute rewards accordingly", async function () {
@@ -241,8 +280,6 @@ describe("Stable Joe Staking", function () {
       await this.rewardToken
         .connect(this.joeMaker)
         .transfer(this.stableJoeStaking.address, ethers.utils.parseEther("6"));
-      await this.stableJoeStaking.updateReward(this.rewardToken.address);
-      await increase(86400);
 
       await this.stableJoeStaking
         .connect(this.alice)
@@ -672,6 +709,29 @@ describe("Stable Joe Staking", function () {
       );
     });
 
+    it("should allow EOAs with Smol Joes to be exempt from paying deposit fee", async function () {
+      await this.stableJoeStaking
+        .connect(this.dylan)
+        .deposit(ethers.utils.parseEther("100"));
+      expect(
+        await this.joe.balanceOf(this.stableJoeStaking.address)
+      ).to.be.equal(ethers.utils.parseEther("100"));
+
+      // Transfer Smol Joe to vault contract and deposit via vault
+      await this.smolJoes
+        .connect(this.dylan)
+        .transferFrom(this.dylan.address, this.stableJoeVault.address, 0);
+      await this.stableJoeVault
+        .connect(this.dylan)
+        .deposit(ethers.utils.parseEther("100"));
+      expect(
+        await this.joe.balanceOf(this.stableJoeStaking.address)
+      ).to.be.equal(ethers.utils.parseEther("197"));
+      expect(
+        await this.joe.balanceOf(this.penaltyCollector.address)
+      ).to.be.equal(ethers.utils.parseEther("3"));
+    });
+
     it("should allow emergency withdraw", async function () {
       await this.stableJoeStaking
         .connect(this.alice)
@@ -704,6 +764,53 @@ describe("Stable Joe Staking", function () {
       );
       expect(userInfo[0]).to.be.equal(0);
       expect(userInfo[1]).to.be.equal(0);
+    });
+
+    it("should allow owner to sweep stuck tokens that are not rewards", async function () {
+      await this.stableJoeStaking
+        .connect(this.alice)
+        .deposit(ethers.utils.parseEther("300"));
+      expect(await this.joe.balanceOf(this.alice.address)).to.be.equal(
+        ethers.utils.parseEther("700")
+      );
+      expect(
+        await this.joe.balanceOf(this.stableJoeStaking.address)
+      ).to.be.equal(ethers.utils.parseEther("291"));
+
+      const stuckToken = await this.JoeTokenCF.deploy();
+      await stuckToken.mint(
+        this.stableJoeStaking.address,
+        ethers.utils.parseEther("100")
+      ); // We send 100 Tokens to sJoe's address
+
+      await this.stableJoeStaking
+        .connect(this.dev)
+        .sweep(stuckToken.address, this.dev.address);
+
+      expect(await stuckToken.balanceOf(this.dev.address)).to.be.equal(
+        ethers.utils.parseEther("100")
+      );
+      expect(
+        await stuckToken.balanceOf(this.stableJoeStaking.address)
+      ).to.be.equal(0);
+
+      // Should fail for joe
+      await expect(
+        this.stableJoeStaking
+          .connect(this.dev)
+          .sweep(this.joe.address, this.dev.address)
+      ).to.be.revertedWith("StableJoeStaking: token can't be swept");
+
+      // Should fail if stuckToken is added as a reward token
+      await this.stableJoeStaking
+        .connect(this.dev)
+        .addRewardToken(stuckToken.address);
+
+      await expect(
+        this.stableJoeStaking
+          .connect(this.dev)
+          .sweep(stuckToken.address, this.dev.address)
+      ).to.be.revertedWith("StableJoeStaking: token can't be swept");
     });
   });
 

@@ -1,15 +1,18 @@
 module.exports = async function ({ getNamedAccounts, deployments }) {
-  const { deploy } = deployments;
+
+
+  const { deploy, catchUnknownSigner } = deployments;
   const { deployer } = await getNamedAccounts();
 
   let joeAddress,
     veJoeAddress = (await deployments.get("VeJoeToken")).address,
-    baseGenerationRate = 0,
-    boostedGenerationRate = 1,
-    boostedThreshold = 1,
-    boostedDuration = 0,
-    maxCap = 1;
 
+    veJoePerSharePerSec = 3170979198376,
+    speedUpVeJoePerSharePerSec = 3170979198376,
+    speedUpThreshold = 5,
+    speedUpDuration = 15 * 60 * 60 * 24,
+    maxCapPct = 10000,
+    proxyOwner;
   const chainId = await getChainId();
   if (chainId == 4) {
     // rinkeby contract addresses
@@ -44,6 +47,35 @@ module.exports = async function ({ getNamedAccounts, deployments }) {
     },
     log: true,
   });
+    // multisig
+    proxyOwner = "0x2fbB61a10B96254900C03F1644E9e1d2f5E76DD2";
+  }
+
+  await catchUnknownSigner(
+    deploy("VeJoeStaking", {
+      from: deployer,
+      proxy: {
+        owner: proxyOwner,
+        proxyContract: "OpenZeppelinTransparentProxy",
+        viaAdminContract: "DefaultProxyAdmin",
+        execute: {
+          init: {
+            methodName: "initialize",
+            args: [
+              joeAddress,
+              veJoeAddress,
+              veJoePerSharePerSec,
+              speedUpVeJoePerSharePerSec,
+              speedUpThreshold,
+              speedUpDuration,
+              maxCapPct,
+            ],
+          },
+        },
+      },
+      log: true,
+    })
+  );
 };
 
 module.exports.tags = ["VeJoeStaking"];
