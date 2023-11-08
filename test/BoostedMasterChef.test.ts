@@ -55,6 +55,7 @@ describe("BoostedMasterChefJoe", function () {
 
     await this.veJoe.connect(this.dev).setBoostedMasterChefJoe(this.bmc.address)
 
+
     await this.dummyToken.connect(this.dev).approve(this.bmc.address, 1)
     expect(await this.bmc.connect(this.dev).init(this.dummyToken.address))
       .to.emit(this.bmc, "Init")
@@ -69,6 +70,7 @@ describe("BoostedMasterChefJoe", function () {
 
     this.lp = await this.ERC20Mock.deploy("LPToken", "LP", 10000000000)
     await this.lp.deployed()
+
     await this.lp.transfer(this.alice.address, 1000)
     await this.lp.transfer(this.bob.address, 1000)
     await this.lp.transfer(this.carol.address, 1000)
@@ -289,7 +291,6 @@ describe("BoostedMasterChefJoe", function () {
 
     const pending = await this.bmc.pendingTokens(0, this.bob.address)
     expect(pending[0].gt(0)).to.be.true
-
     await this.veJoe.connect(this.dev).mint(this.bob.address, 10)
     let claimable = await this.bmc.claimableJoe(0, this.bob.address)
     // Close to as 1 second passes after the mint.
@@ -328,12 +329,15 @@ describe("BoostedMasterChefJoe", function () {
     expect((await this.bmc.poolInfo(0)).allocPoint).to.equal(1000)
   })
 
+
+
   it("it should never decrease pending tokens", async function () {
     await this.veJoe.connect(this.dev).mint(this.bob.address, 100)
     await this.lp.connect(this.bob).approve(this.bmc.address, 1000)
     await this.bmc.connect(this.bob).deposit(0, 1000)
 
     await increase(duration.hours(24))
+
     await advanceBlock()
     const pending0 = await this.bmc.pendingTokens(0, this.bob.address)
 
@@ -402,6 +406,7 @@ describe("BoostedMasterChefJoe", function () {
 
     await this.lp1.connect(this.alice).approve(this.bmc.address, "4521227702709282");
     await this.bmc.connect(this.alice).deposit(0, "4521227702709282");
+
   })
 
   after(async function () {
