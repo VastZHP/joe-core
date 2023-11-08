@@ -7,7 +7,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "./VeERC20.sol";
 
 interface IBoostedMasterChefJoe {
-    function updateBoost(address, uint256) external;
+    function updateFactor(address, uint256) external;
 }
 
 /// @title Vote Escrow Joe Token - veJOE
@@ -16,6 +16,8 @@ interface IBoostedMasterChefJoe {
 contract VeJoeToken is VeERC20("VeJoeToken", "veJOE"), Ownable {
     /// @notice the BoostedMasterChefJoe contract
     IBoostedMasterChefJoe public boostedMasterChef;
+
+    event UpdateBoostedMasterChefJoe(address indexed user, address boostedMasterChef);
 
     /// @dev Creates `_amount` token to `_to`. Must only be called by the owner (VeJoeStaking)
     /// @param _to The address that will receive the mint
@@ -36,11 +38,17 @@ contract VeJoeToken is VeERC20("VeJoeToken", "veJOE"), Ownable {
     function setBoostedMasterChefJoe(address _boostedMasterChef) external onlyOwner {
         // We allow 0 address here if we want to disable the callback operations
         boostedMasterChef = IBoostedMasterChefJoe(_boostedMasterChef);
+
+        emit UpdateBoostedMasterChefJoe(_msgSender(), _boostedMasterChef);
     }
 
     function _afterTokenOperation(address _account, uint256 _newBalance) internal override {
         if (address(boostedMasterChef) != address(0)) {
-            boostedMasterChef.updateBoost(_account, _newBalance);
+            boostedMasterChef.updateFactor(_account, _newBalance);
         }
+    }
+
+    function renounceOwnership() public override onlyOwner {
+        revert("VeJoeToken: Cannot renounce, can only transfer ownership");
     }
 }
