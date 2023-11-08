@@ -24,20 +24,20 @@ describe("VeJoe Staking", function () {
     await this.joe.mint(this.bob.address, ethers.utils.parseEther("1000"));
     await this.joe.mint(this.carol.address, ethers.utils.parseEther("1000"));
 
-    this.baseGenerationRate = ethers.utils.parseEther("1");
-    this.boostedGenerationRate = ethers.utils.parseEther("2");
-    this.boostedThreshold = 5;
-    this.boostedDuration = 50;
-    this.maxCap = 200;
+    this.veJoePerSharePerSec = ethers.utils.parseEther("1");
+    this.speedUpVeJoePerSharePerSec = ethers.utils.parseEther("1");
+    this.speedUpThreshold = 5;
+    this.speedUpDuration = 50;
+    this.maxCapPct = 20000;
 
     this.veJoeStaking = await upgrades.deployProxy(this.VeJoeStakingCF, [
       this.joe.address, // _joe
       this.veJoe.address, // _veJoe
-      this.baseGenerationRate, // _baseGenerationRate
-      this.boostedGenerationRate, // _boostedGenerationRate
-      this.boostedThreshold, // _boostedThreshold
-      this.boostedDuration, // _boostedDuration
-      this.maxCap, // _maxCap
+      this.veJoePerSharePerSec, // _veJoePerSharePerSec
+      this.speedUpVeJoePerSharePerSec, // _speedUpVeJoePerSharePerSec
+      this.speedUpThreshold, // _speedUpThreshold
+      this.speedUpDuration, // _speedUpDuration
+      this.maxCapPct, // _maxCapPct
     ]);
     await this.veJoe.transferOwnership(this.veJoeStaking.address);
 
@@ -52,157 +52,109 @@ describe("VeJoe Staking", function () {
       .approve(this.veJoeStaking.address, ethers.utils.parseEther("100000"));
   });
 
-  describe("setMaxCap", function () {
-    it("should not allow non-owner to setMaxCap", async function () {
+  describe("setMaxCapPct", function () {
+    it("should not allow non-owner to setMaxCapPct", async function () {
       await expect(
-        this.veJoeStaking.connect(this.alice).setMaxCap(200)
+        this.veJoeStaking.connect(this.alice).setMaxCapPct(this.maxCapPct + 1)
       ).to.be.revertedWith("Ownable: caller is not the owner");
     });
 
-    it("should not allow owner to set lower maxCap", async function () {
-      expect(await this.veJoeStaking.maxCap()).to.be.equal(this.maxCap);
+    it("should not allow owner to set lower maxCapPct", async function () {
+      expect(await this.veJoeStaking.maxCapPct()).to.be.equal(this.maxCapPct);
 
       await expect(
-        this.veJoeStaking.connect(this.dev).setMaxCap(99)
+        this.veJoeStaking.connect(this.dev).setMaxCapPct(this.maxCapPct - 1)
       ).to.be.revertedWith(
-        "VeJoeStaking: expected new _maxCap to be greater than existing maxCap"
+        "VeJoeStaking: expected new _maxCapPct to be greater than existing maxCapPct"
       );
     });
 
-    it("should not allow owner to set maxCap greater than upper limit", async function () {
+    it("should not allow owner to set maxCapPct greater than upper limit", async function () {
       await expect(
-        this.veJoeStaking.connect(this.dev).setMaxCap(100001)
+        this.veJoeStaking.connect(this.dev).setMaxCapPct(10000001)
       ).to.be.revertedWith(
-        "VeJoeStaking: expected new _maxCap to be greater than 0 and leq to 100000"
+        "VeJoeStaking: expected new _maxCapPct to be non-zero and <= 10000000"
       );
     });
 
-    it("should allow owner to setMaxCap", async function () {
-      expect(await this.veJoeStaking.maxCap()).to.be.equal(this.maxCap);
+    it("should allow owner to setMaxCapPct", async function () {
+      expect(await this.veJoeStaking.maxCapPct()).to.be.equal(this.maxCapPct);
 
-      await this.veJoeStaking.connect(this.dev).setMaxCap(this.maxCap + 100);
+      await this.veJoeStaking
+        .connect(this.dev)
+        .setMaxCapPct(this.maxCapPct + 100);
 
-      expect(await this.veJoeStaking.maxCap()).to.be.equal(this.maxCap + 100);
+      expect(await this.veJoeStaking.maxCapPct()).to.be.equal(
+        this.maxCapPct + 100
+      );
     });
   });
 
-  describe("setBaseGenerationRate", function () {
-    it("should not allow non-owner to setMaxCap", async function () {
+  describe("setVeJoePerSharePerSec", function () {
+    it("should not allow non-owner to setVeJoePerSharePerSec", async function () {
       await expect(
         this.veJoeStaking
           .connect(this.alice)
-          .setBaseGenerationRate(ethers.utils.parseEther("1.5"))
+          .setVeJoePerSharePerSec(ethers.utils.parseEther("1.5"))
       ).to.be.revertedWith("Ownable: caller is not the owner");
     });
 
-    it("should not allow owner to setBaseGenerationRate greater than boostedGenerationRate", async function () {
-      expect(await this.veJoeStaking.boostedGenerationRate()).to.be.equal(
-        this.boostedGenerationRate
-      );
-
+    it("should not allow owner to set veJoePerSharePerSec greater than upper limit", async function () {
       await expect(
         this.veJoeStaking
           .connect(this.dev)
-          .setBaseGenerationRate(ethers.utils.parseEther("3"))
+          .setVeJoePerSharePerSec(ethers.utils.parseUnits("1", 37))
       ).to.be.revertedWith(
-        "VeJoeStaking: expected new _baseGenerationRate to be less than boostedGenerationRate"
+        "VeJoeStaking: expected _veJoePerSharePerSec to be <= 1e36"
       );
     });
 
-    it("should allow owner to setBaseGenerationRate", async function () {
-      expect(await this.veJoeStaking.baseGenerationRate()).to.be.equal(
-        this.baseGenerationRate
+    it("should allow owner to setVeJoePerSharePerSec", async function () {
+      expect(await this.veJoeStaking.veJoePerSharePerSec()).to.be.equal(
+        this.veJoePerSharePerSec
       );
 
       await this.veJoeStaking
         .connect(this.dev)
-        .setBaseGenerationRate(ethers.utils.parseEther("1.5"));
+        .setVeJoePerSharePerSec(ethers.utils.parseEther("1.5"));
 
-      expect(await this.veJoeStaking.baseGenerationRate()).to.be.equal(
+      expect(await this.veJoeStaking.veJoePerSharePerSec()).to.be.equal(
         ethers.utils.parseEther("1.5")
       );
     });
   });
 
-  describe("setBoostedGenerationRate", function () {
-    it("should not allow non-owner to setBoostedGenerationRate", async function () {
+  describe("setSpeedUpThreshold", function () {
+    it("should not allow non-owner to setSpeedUpThreshold", async function () {
       await expect(
-        this.veJoeStaking
-          .connect(this.alice)
-          .setBoostedGenerationRate(ethers.utils.parseEther("11"))
+        this.veJoeStaking.connect(this.alice).setSpeedUpThreshold(10)
       ).to.be.revertedWith("Ownable: caller is not the owner");
     });
 
-    it("should not allow owner to setBoostedGenerationRate leq to baseGenerationRate", async function () {
-      expect(await this.veJoeStaking.baseGenerationRate()).to.be.equal(
-        this.baseGenerationRate
-      );
-
+    it("should not allow owner to setSpeedUpThreshold to 0", async function () {
       await expect(
-        this.veJoeStaking
-          .connect(this.dev)
-          .setBoostedGenerationRate(ethers.utils.parseEther("0.99"))
+        this.veJoeStaking.connect(this.dev).setSpeedUpThreshold(0)
       ).to.be.revertedWith(
-        "VeJoeStaking: expected new _boostedGenerationRate to be greater than baseGenerationRate"
+        "VeJoeStaking: expected _speedUpThreshold to be > 0 and <= 100"
       );
     });
 
-    it("should allow owner to setBoostedGenerationRate", async function () {
-      expect(await this.veJoeStaking.boostedGenerationRate()).to.be.equal(
-        this.boostedGenerationRate
-      );
-
-      await this.veJoeStaking
-        .connect(this.dev)
-        .setBoostedGenerationRate(ethers.utils.parseEther("3"));
-
-      expect(await this.veJoeStaking.boostedGenerationRate()).to.be.equal(
-        ethers.utils.parseEther("3")
-      );
-    });
-  });
-
-  describe("setBoostedThreshold", function () {
-    it("should not allow non-owner to setBoostedThreshold", async function () {
+    it("should not allow owner to setSpeedUpThreshold greater than 100", async function () {
       await expect(
-        this.veJoeStaking.connect(this.alice).setBoostedThreshold(10)
-      ).to.be.revertedWith("Ownable: caller is not the owner");
-    });
-
-    it("should not allow owner to setBoostedThreshold greater than 100", async function () {
-      await expect(
-        this.veJoeStaking.connect(this.dev).setBoostedThreshold(101)
+        this.veJoeStaking.connect(this.dev).setSpeedUpThreshold(101)
       ).to.be.revertedWith(
-        "VeJoeStaking: expected new _boostedThreshold to be less than or equal to 100"
+        "VeJoeStaking: expected _speedUpThreshold to be > 0 and <= 100"
       );
     });
 
-    it("should allow owner to setBoostedThreshold", async function () {
-      expect(await this.veJoeStaking.boostedThreshold()).to.be.equal(
-        this.boostedThreshold
+    it("should allow owner to setSpeedUpThreshold", async function () {
+      expect(await this.veJoeStaking.speedUpThreshold()).to.be.equal(
+        this.speedUpThreshold
       );
 
-      await this.veJoeStaking.connect(this.dev).setBoostedThreshold(10);
+      await this.veJoeStaking.connect(this.dev).setSpeedUpThreshold(10);
 
-      expect(await this.veJoeStaking.boostedThreshold()).to.be.equal(10);
-    });
-  });
-
-  describe("setBoostedDuration", function () {
-    it("should not allow non-owner to setBoostedDuration", async function () {
-      await expect(
-        this.veJoeStaking.connect(this.alice).setBoostedDuration(100)
-      ).to.be.revertedWith("Ownable: caller is not the owner");
-    });
-
-    it("should allow owner to setBoostedThreshold", async function () {
-      expect(await this.veJoeStaking.boostedDuration()).to.be.equal(
-        this.boostedDuration
-      );
-
-      await this.veJoeStaking.connect(this.dev).setBoostedDuration(100);
-
-      expect(await this.veJoeStaking.boostedDuration()).to.be.equal(100);
+      expect(await this.veJoeStaking.speedUpThreshold()).to.be.equal(10);
     });
   });
 
@@ -221,10 +173,12 @@ describe("VeJoe Staking", function () {
       );
       // balance
       expect(beforeAliceUserInfo[0]).to.be.equal(0);
-      // lastRewardTimestamp
+      // rewardDebt
       expect(beforeAliceUserInfo[1]).to.be.equal(0);
-      // boostEndTimestamp
+      // lastClaimTimestamp
       expect(beforeAliceUserInfo[2]).to.be.equal(0);
+      // speedUpEndTimestamp
+      expect(beforeAliceUserInfo[3]).to.be.equal(0);
 
       // Check joe balance before deposit
       expect(await this.joe.balanceOf(this.alice.address)).to.be.equal(
@@ -245,11 +199,13 @@ describe("VeJoe Staking", function () {
       );
       // balance
       expect(afterAliceUserInfo[0]).to.be.equal(depositAmount);
-      // lastRewardTimestamp
-      expect(afterAliceUserInfo[1]).to.be.equal(depositBlock.timestamp);
-      // boostEndTimestamp
-      expect(afterAliceUserInfo[2]).to.be.equal(
-        depositBlock.timestamp + this.boostedDuration
+      // debtReward
+      expect(afterAliceUserInfo[1]).to.be.equal(0);
+      // lastClaimTimestamp
+      expect(afterAliceUserInfo[2]).to.be.equal(depositBlock.timestamp);
+      // speedUpEndTimestamp
+      expect(afterAliceUserInfo[3]).to.be.equal(
+        depositBlock.timestamp + this.speedUpDuration
       );
     });
 
@@ -284,38 +240,50 @@ describe("VeJoe Staking", function () {
         .deposit(ethers.utils.parseEther("1"));
 
       // Check veJoe balance after deposit
-      // Should have 100 * 30 * 2 = 6000 veJOE
+      // Should have sum of:
+      // baseVeJoe =  100 * 30 = 3000 veJOE
+      // speedUpVeJoe = 100 * 30 = 3000 veJOE
       expect(await this.veJoe.balanceOf(this.alice.address)).to.be.equal(
         ethers.utils.parseEther("6000")
       );
     });
 
-    it("should receive boosted benefits after depositing boostedThreshold with non-zero balance", async function () {
+    it("should receive speed up benefits after depositing speedUpThreshold with non-zero balance", async function () {
       await this.veJoeStaking
         .connect(this.alice)
         .deposit(ethers.utils.parseEther("100"));
 
-      const block = await ethers.provider.getBlock();
+      await increase(this.speedUpDuration);
+
+      await this.veJoeStaking.connect(this.alice).claim();
+
+      const afterClaimAliceUserInfo = await this.veJoeStaking.userInfos(
+        this.alice.address
+      );
+      // speedUpTimestamp
+      expect(afterClaimAliceUserInfo[3]).to.be.equal(0);
 
       await this.veJoeStaking
         .connect(this.alice)
         .deposit(ethers.utils.parseEther("5"));
 
-      const afterAliceUserInfo = await this.veJoeStaking.userInfos(
+      const secondDepositBlock = await ethers.provider.getBlock();
+
+      const seconDepositAliceUserInfo = await this.veJoeStaking.userInfos(
         this.alice.address
       );
-      // boostEndTimestamp
-      expect(afterAliceUserInfo[2]).to.be.equal(
-        block.timestamp + this.boostedDuration
+      // speedUpTimestamp
+      expect(seconDepositAliceUserInfo[3]).to.be.equal(
+        secondDepositBlock.timestamp + this.speedUpDuration
       );
     });
 
-    it("should not receive boosted benefits after depositing less than boostedThreshold with non-zero balance", async function () {
+    it("should not receive speed up benefits after depositing less than speedUpThreshold with non-zero balance", async function () {
       await this.veJoeStaking
         .connect(this.alice)
         .deposit(ethers.utils.parseEther("100"));
 
-      await increase(this.boostedDuration);
+      await increase(this.speedUpDuration);
 
       await this.veJoeStaking
         .connect(this.alice)
@@ -324,8 +292,116 @@ describe("VeJoe Staking", function () {
       const afterAliceUserInfo = await this.veJoeStaking.userInfos(
         this.alice.address
       );
-      // boostEndTimestamp
-      expect(afterAliceUserInfo[2]).to.be.equal(0);
+      // speedUpTimestamp
+      expect(afterAliceUserInfo[3]).to.be.equal(0);
+    });
+
+    it("should receive speed up benefits after deposit with zero balance", async function () {
+      await this.veJoeStaking
+        .connect(this.alice)
+        .deposit(ethers.utils.parseEther("100"));
+
+      await increase(100);
+
+      await this.veJoeStaking
+        .connect(this.alice)
+        .withdraw(ethers.utils.parseEther("100"));
+
+      await increase(100);
+
+      await this.veJoeStaking
+        .connect(this.alice)
+        .deposit(ethers.utils.parseEther("1"));
+
+      const secondDepositBlock = await ethers.provider.getBlock();
+
+      const secondDepositAliceUserInfo = await this.veJoeStaking.userInfos(
+        this.alice.address
+      );
+      // speedUpEndTimestamp
+      expect(secondDepositAliceUserInfo[3]).to.be.equal(
+        secondDepositBlock.timestamp + this.speedUpDuration
+      );
+    });
+
+    it("should have speed up period extended after depositing speedUpThreshold and currently receiving speed up benefits", async function () {
+      await this.veJoeStaking
+        .connect(this.alice)
+        .deposit(ethers.utils.parseEther("100"));
+
+      const initialDepositBlock = await ethers.provider.getBlock();
+
+      const initialDepositAliceUserInfo = await this.veJoeStaking.userInfos(
+        this.alice.address
+      );
+      const initialDepositSpeedUpEndTimestamp = initialDepositAliceUserInfo[3];
+
+      expect(initialDepositSpeedUpEndTimestamp).to.be.equal(
+        initialDepositBlock.timestamp + this.speedUpDuration
+      );
+
+      // Increase by some amount of time less than speedUpDuration
+      await increase(this.speedUpDuration / 2);
+
+      // Deposit speedUpThreshold amount so that speed up period gets extended
+      await this.veJoeStaking
+        .connect(this.alice)
+        .deposit(ethers.utils.parseEther("5"));
+
+      const secondDepositBlock = await ethers.provider.getBlock();
+
+      const secondDepositAliceUserInfo = await this.veJoeStaking.userInfos(
+        this.alice.address
+      );
+      const secondDepositSpeedUpEndTimestamp = secondDepositAliceUserInfo[3];
+
+      expect(
+        secondDepositSpeedUpEndTimestamp.gt(initialDepositSpeedUpEndTimestamp)
+      ).to.be.equal(true);
+      expect(secondDepositSpeedUpEndTimestamp).to.be.equal(
+        secondDepositBlock.timestamp + this.speedUpDuration
+      );
+    });
+
+    it("should have lastClaimTimestamp updated after depositing if holding max veJOE cap", async function () {
+      await this.veJoeStaking
+        .connect(this.alice)
+        .deposit(ethers.utils.parseEther("100"));
+
+      // Increase by `maxCapPct` seconds to ensure that user will have max veJOE
+      // after claiming
+      await increase(this.maxCapPct);
+
+      await this.veJoeStaking.connect(this.alice).claim();
+
+      const claimBlock = await ethers.provider.getBlock();
+
+      const claimAliceUserInfo = await this.veJoeStaking.userInfos(
+        this.alice.address
+      );
+      // lastClaimTimestamp
+      expect(claimAliceUserInfo[2]).to.be.equal(claimBlock.timestamp);
+
+      await increase(this.maxCapPct);
+
+      const pendingVeJoe = await this.veJoeStaking.getPendingVeJoe(
+        this.alice.address
+      );
+      expect(pendingVeJoe).to.be.equal(0);
+
+      await this.veJoeStaking
+        .connect(this.alice)
+        .deposit(ethers.utils.parseEther("5"));
+
+      const secondDepositBlock = await ethers.provider.getBlock();
+
+      const secondDepositAliceUserInfo = await this.veJoeStaking.userInfos(
+        this.alice.address
+      );
+      // lastClaimTimestamp
+      expect(secondDepositAliceUserInfo[2]).to.be.equal(
+        secondDepositBlock.timestamp
+      );
     });
   });
 
@@ -356,7 +432,7 @@ describe("VeJoe Staking", function () {
         ethers.utils.parseEther("900")
       );
 
-      await increase(this.boostedDuration / 2);
+      await increase(this.speedUpDuration / 2);
 
       await this.veJoeStaking.connect(this.alice).claim();
       const claimBlock = await ethers.provider.getBlock();
@@ -370,11 +446,16 @@ describe("VeJoe Staking", function () {
       expect(beforeAliceUserInfo[0]).to.be.equal(
         ethers.utils.parseEther("100")
       );
-      // lastRewardTimestamp
-      expect(beforeAliceUserInfo[1]).to.be.equal(claimBlock.timestamp);
-      // boostEndTimestamp
-      expect(beforeAliceUserInfo[2]).to.be.equal(
-        depositBlock.timestamp + this.boostedDuration
+      // rewardDebt
+      expect(beforeAliceUserInfo[1]).to.be.equal(
+        // Divide by 2 since half of it is from the speed up
+        (await this.veJoe.balanceOf(this.alice.address)).div(2)
+      );
+      // lastClaimTimestamp
+      expect(beforeAliceUserInfo[2]).to.be.equal(claimBlock.timestamp);
+      // speedUpEndTimestamp
+      expect(beforeAliceUserInfo[3]).to.be.equal(
+        depositBlock.timestamp + this.speedUpDuration
       );
 
       await this.veJoeStaking
@@ -388,10 +469,14 @@ describe("VeJoe Staking", function () {
       );
       // balance
       expect(afterAliceUserInfo[0]).to.be.equal(ethers.utils.parseEther("95"));
-      // lastRewardTimestamp
-      expect(afterAliceUserInfo[1]).to.be.equal(withdrawBlock.timestamp);
-      // boostEndTimestamp
-      expect(afterAliceUserInfo[2]).to.be.equal(0);
+      // rewardDebt
+      expect(afterAliceUserInfo[1]).to.be.equal(
+        (await this.veJoeStaking.accVeJoePerShare()).mul(95)
+      );
+      // lastClaimTimestamp
+      expect(afterAliceUserInfo[2]).to.be.equal(withdrawBlock.timestamp);
+      // speedUpEndTimestamp
+      expect(afterAliceUserInfo[3]).to.be.equal(0);
 
       // Check user token balances are updated correctly
       expect(await this.veJoe.balanceOf(this.alice.address)).to.be.equal(0);
@@ -420,27 +505,10 @@ describe("VeJoe Staking", function () {
       await this.veJoeStaking.connect(this.alice).claim();
       const claimBlock = await ethers.provider.getBlock();
 
-      const afterAliceUserInfo = await this.veJoeStaking.userInfos(
-        this.alice.address
-      );
       // lastRewardTimestamp
-      expect(afterAliceUserInfo[1]).to.be.equal(claimBlock.timestamp);
-    });
-
-    it("should reset boostEndTimestamp on claim after boost period ends", async function () {
-      await this.veJoeStaking
-        .connect(this.alice)
-        .deposit(ethers.utils.parseEther("100"));
-
-      await increase(this.boostedDuration);
-
-      await this.veJoeStaking.connect(this.alice).claim();
-
-      const afterAliceUserInfo = await this.veJoeStaking.userInfos(
-        this.alice.address
+      expect(await this.veJoeStaking.lastRewardTimestamp()).to.be.equal(
+        claimBlock.timestamp
       );
-      // boostEndTimestamp
-      expect(afterAliceUserInfo[2]).to.be.equal(0);
     });
 
     it("should receive veJOE on claim", async function () {
@@ -448,7 +516,7 @@ describe("VeJoe Staking", function () {
         .connect(this.alice)
         .deposit(ethers.utils.parseEther("100"));
 
-      await increase(this.boostedDuration - 1);
+      await increase(49);
 
       // Check veJoe balance before claim
       expect(await this.veJoe.balanceOf(this.alice.address)).to.be.equal(0);
@@ -456,39 +524,70 @@ describe("VeJoe Staking", function () {
       await this.veJoeStaking.connect(this.alice).claim();
 
       // Check veJoe balance after claim
+      // Should be sum of:
+      // baseVeJoe = 100 * 50 = 5000
+      // speedUpVeJoe = 100 * 50 = 5000
       expect(await this.veJoe.balanceOf(this.alice.address)).to.be.equal(
         ethers.utils.parseEther("10000")
       );
     });
 
-    it("should receive correct veJOE amount on claim when lastRewardTimestamp < boostEndTimestamp < now", async function () {
+    it("should receive correct veJOE if veJoePerSharePerSec is updated multiple times", async function () {
       await this.veJoeStaking
         .connect(this.alice)
         .deposit(ethers.utils.parseEther("100"));
 
-      // Increase by some duration before boost period ends
-      await increase(this.boostedDuration / 2 - 1);
+      await increase(9);
 
-      // Ensure user has 0 veJoe balance before first claim
+      await this.veJoeStaking
+        .connect(this.dev)
+        .setVeJoePerSharePerSec(ethers.utils.parseEther("2"));
+
+      await increase(9);
+
+      await this.veJoeStaking
+        .connect(this.dev)
+        .setVeJoePerSharePerSec(ethers.utils.parseEther("1.5"));
+
+      await increase(9);
+
+      // Check veJoe balance before claim
       expect(await this.veJoe.balanceOf(this.alice.address)).to.be.equal(0);
 
-      // Perform first claim before boost period ends
       await this.veJoeStaking.connect(this.alice).claim();
 
-      // Ensure user has 100 * 25 * 2 = 5000 veJOE
+      // Check veJoe balance after claim
+      // For baseVeJoe, we're expected to have been generating at a rate of 1 for
+      // the first 10 seconds, a rate of 2 for the next 10 seconds, and a rate of
+      // 1.5 for the last 10 seconds, i.e.:
+      // baseVeJoe = 100 * 10 * 1 + 100 * 10 * 2 + 100 * 10 * 1.5 = 4500
+      // speedUpVeJoe = 100 * 30 = 3000
       expect(await this.veJoe.balanceOf(this.alice.address)).to.be.equal(
-        ethers.utils.parseEther("5000")
+        ethers.utils.parseEther("7500")
       );
+    });
+  });
 
-      // Increase by some duration after boost period ends
-      await increase(this.boostedDuration - 1);
+  describe("updateRewardVars", function () {
+    it("should have correct reward vars after time passes", async function () {
+      await this.veJoeStaking
+        .connect(this.alice)
+        .deposit(ethers.utils.parseEther("100"));
 
-      // Perform claim after boost period ended
-      await this.veJoeStaking.connect(this.alice).claim();
+      const block = await ethers.provider.getBlock();
+      await increase(29);
 
-      // Ensure user has 5000 + 100 * 25 * 2 + 100 * 25 * 1 = 12500 veJoe
-      expect(await this.veJoe.balanceOf(this.alice.address)).to.be.equal(
-        ethers.utils.parseEther("12500")
+      const accVeJoePerShareBeforeUpdate =
+        await this.veJoeStaking.accVeJoePerShare();
+      await this.veJoeStaking.connect(this.dev).updateRewardVars();
+
+      expect(await this.veJoeStaking.lastRewardTimestamp()).to.be.equal(
+        block.timestamp + 30
+      );
+      // Increase should be `secondsElapsed * veJoePerSharePerSec * ACC_VEJOE_PER_SHARE_PER_SEC_PRECISION`:
+      // = 30 * 1 * 1e18
+      expect(await this.veJoeStaking.accVeJoePerShare()).to.be.equal(
+        accVeJoePerShareBeforeUpdate.add(ethers.utils.parseEther("30"))
       );
     });
   });

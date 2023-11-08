@@ -19,144 +19,175 @@ contract VeJoeStaking is Initializable, OwnableUpgradeable {
     using SafeMathUpgradeable for uint256;
     using SafeERC20Upgradeable for IERC20Upgradeable;
 
+    /// @notice Info for each user
+    /// `balance`: Amount of JOE currently staked by user
+    /// `rewardDebt`: The reward debt of the user
+    /// `lastClaimTimestamp`: The timestamp of user's last claim or withdraw
+    /// `speedUpEndTimestamp`: The timestamp when user stops receiving speed up benefits, or
+    /// zero if user is not currently receiving speed up benefits
     struct UserInfo {
-        uint256 balance; // Amount of JOE currently staked by user
-        uint256 lastRewardTimestamp; // Timestamp of last non-zero veJOE claim, or time of first
-        // deposit if user has not claimed any veJOE yet
-        uint256 boostEndTimestamp; // Timestamp of when user stops receiving boost benefits.
-        // Note that this will be reset to 0 after the end of a boost
+        uint256 balance;
+        uint256 rewardDebt;
+        uint256 lastClaimTimestamp;
+        uint256 speedUpEndTimestamp;
+        /**
+         * @notice We do some fancy math here. Basically, any point in time, the amount of veJOE
+         * entitled to a user but is pending to be distributed is:
+         *
+         *   pendingReward = pendingBaseReward + pendingSpeedUpReward
+         *
+         *   pendingBaseReward = (user.balance * accVeJoePerShare) - user.rewardDebt
+         *
+         *   if user.speedUpEndTimestamp != 0:
+         *     speedUpCeilingTimestamp = min(block.timestamp, user.speedUpEndTimestamp)
+         *     speedUpSecondsElapsed = speedUpCeilingTimestamp - user.lastClaimTimestamp
+         *     pendingSpeedUpReward = speedUpSecondsElapsed * user.balance * speedUpVeJoePerSharePerSec
+         *   else:
+         *     pendingSpeedUpReward = 0
+         */
     }
 
     IERC20Upgradeable public joe;
     VeJoeToken public veJoe;
 
-    /// @notice The maximum ratio of veJOE to staked JOE
-    /// For example, if user has `n` JOE staked, they can own a maximum of `n * maxCap` veJOE.
-    uint256 public maxCap;
+    /// @notice The maximum limit of veJOE user can have as percentage points of staked JOE
+    /// For example, if user has `n` JOE staked, they can own a maximum of `n * maxCapPct / 100` veJOE.
+    uint256 public maxCapPct;
 
-    /// @notice Rate of veJOE generated per sec per JOE staked, in parts per 1e18
-    uint256 public baseGenerationRate;
+    /// @notice The upper limit of `maxCapPct`
+    uint256 public upperLimitMaxCapPct;
 
-    /// @notice Boosted rate of veJOE generated per sec per JOE staked, in parts per 1e18
-    uint256 public boostedGenerationRate;
+    /// @notice The accrued veJoe per share, scaled to `ACC_VEJOE_PER_SHARE_PRECISION`
+    uint256 public accVeJoePerShare;
 
-    /// @notice Precision of `baseGenerationRate` and `boostedGenerationRate`
-    uint256 public PRECISION;
+    /// @notice Precision of `accVeJoePerShare`
+    uint256 public ACC_VEJOE_PER_SHARE_PRECISION;
+
+    /// @notice The last time that the reward variables were updated
+    uint256 public lastRewardTimestamp;
+
+    /// @notice veJOE per sec per JOE staked, scaled to `VEJOE_PER_SHARE_PER_SEC_PRECISION`
+    uint256 public veJoePerSharePerSec;
+
+    /// @notice Speed up veJOE per sec per JOE staked, scaled to `VEJOE_PER_SHARE_PER_SEC_PRECISION`
+    uint256 public speedUpVeJoePerSharePerSec;
+
+    /// @notice The upper limit of `veJoePerSharePerSec` and `speedUpVeJoePerSharePerSec`
+    uint256 public upperLimitVeJoePerSharePerSec;
+
+    /// @notice Precision of `veJoePerSharePerSec`
+    uint256 public VEJOE_PER_SHARE_PER_SEC_PRECISION;
 
     /// @notice Percentage of user's current staked JOE user has to deposit in order to start
-    /// receiving boosted benefits, in parts per 100.
-    /// @dev Specifically, user has to deposit at least `boostedThreshold/100 * userStakedJoe` JOE.
-    /// The only exception is the user will also receive boosted benefits if it's their first
-    /// time staking.
-    uint256 public boostedThreshold;
+    /// receiving speed up benefits, in parts per 100.
+    /// @dev Specifically, user has to deposit at least `speedUpThreshold/100 * userStakedJoe` JOE.
+    /// The only exception is the user will also receive speed up benefits if they are depositing
+    /// with zero balance
+    uint256 public speedUpThreshold;
 
-    /// @notice The length of time a user receives boosted benefits
-    uint256 public boostedDuration;
+    /// @notice The length of time a user receives speed up benefits
+    uint256 public speedUpDuration;
 
     mapping(address => UserInfo) public userInfos;
 
     event Claim(address indexed user, uint256 amount);
     event Deposit(address indexed user, uint256 amount);
-    event UpdateBaseGenerationRate(address indexed user, uint256 baseGenerationRate);
-    event UpdateBoostedDuration(address indexed user, uint256 boostedDuration);
-    event UpdateBoostedGenerationRate(address indexed user, uint256 boostedGenerationRate);
-    event UpdateBoostedThreshold(address indexed user, uint256 boostedThreshold);
-    event UpdateMaxCap(address indexed user, uint256 maxCap);
-    event Withdraw(address indexed user, uint256 amount);
+    event UpdateMaxCapPct(address indexed user, uint256 maxCapPct);
+    event UpdateRewardVars(uint256 lastRewardTimestamp, uint256 accVeJoePerShare);
+    event UpdateSpeedUpThreshold(address indexed user, uint256 speedUpThreshold);
+    event UpdateVeJoePerSharePerSec(address indexed user, uint256 veJoePerSharePerSec);
+    event Withdraw(address indexed user, uint256 withdrawAmount, uint256 burnAmount);
 
     /// @notice Initialize with needed parameters
     /// @param _joe Address of the JOE token contract
     /// @param _veJoe Address of the veJOE token contract
-    /// @param _baseGenerationRate Rate of veJOE generated per sec per JOE staked
-    /// @param _boostedGenerationRate Boosted rate of veJOE generated per sec per JOE staked
-    /// @param _boostedThreshold Percentage of total staked JOE user has to deposit to be boosted
-    /// @param _boostedDuration Length of time a user receives boosted benefits
+    /// @param _veJoePerSharePerSec veJOE per sec per JOE staked, scaled to `VEJOE_PER_SHARE_PER_SEC_PRECISION`
+    /// @param _speedUpVeJoePerSharePerSec Similar to `_veJoePerSharePerSec` but for speed up
+    /// @param _speedUpThreshold Percentage of total staked JOE user has to deposit receive speed up
+    /// @param _speedUpDuration Length of time a user receives speed up benefits
+    /// @param _maxCapPct Maximum limit of veJOE user can have as percentage points of staked JOE
     function initialize(
         IERC20Upgradeable _joe,
         VeJoeToken _veJoe,
-        uint256 _baseGenerationRate,
-        uint256 _boostedGenerationRate,
-        uint256 _boostedThreshold,
-        uint256 _boostedDuration,
-        uint256 _maxCap
+        uint256 _veJoePerSharePerSec,
+        uint256 _speedUpVeJoePerSharePerSec,
+        uint256 _speedUpThreshold,
+        uint256 _speedUpDuration,
+        uint256 _maxCapPct
     ) public initializer {
-        require(address(_joe) != address(0), "VeJoeStaking: unexpected zero address for _joe");
-        require(address(_veJoe) != address(0), "VeJoeStaking: unexpected zero address for _veJoe");
-        require(
-            _boostedGenerationRate > _baseGenerationRate,
-            "VeJoeStaking: expected _boostedGenerationRate to be greater than _baseGenerationRate"
-        );
-        require(_boostedThreshold <= 100, "VeJoeStaking: expected _boostedThreshold to be less than or equal to 100");
-        // TODO: Align on what the upper limit of maxCap should be
-        require(
-            _maxCap > 0 && _maxCap <= 100000,
-            "VeJoeStaking: expected new _maxCap to be greater than 0 and leq to 100000"
-        );
-
         __Ownable_init();
 
-        maxCap = _maxCap;
+        require(address(_joe) != address(0), "VeJoeStaking: unexpected zero address for _joe");
+        require(address(_veJoe) != address(0), "VeJoeStaking: unexpected zero address for _veJoe");
+
+        upperLimitVeJoePerSharePerSec = 1e36;
+        require(
+            _veJoePerSharePerSec <= upperLimitVeJoePerSharePerSec,
+            "VeJoeStaking: expected _veJoePerSharePerSec to be <= 1e36"
+        );
+        require(
+            _speedUpVeJoePerSharePerSec <= upperLimitVeJoePerSharePerSec,
+            "VeJoeStaking: expected _speedUpVeJoePerSharePerSec to be <= 1e36"
+        );
+
+        require(
+            _speedUpThreshold != 0 && _speedUpThreshold <= 100,
+            "VeJoeStaking: expected _speedUpThreshold to be > 0 and <= 100"
+        );
+
+        require(_speedUpDuration <= 365 days, "VeJoeStaking: expected _speedUpDuration to be <= 365 days");
+
+        upperLimitMaxCapPct = 10000000;
+        require(
+            _maxCapPct != 0 && _maxCapPct <= upperLimitMaxCapPct,
+            "VeJoeStaking: expected _maxCapPct to be non-zero and <= 10000000"
+        );
+
+        maxCapPct = _maxCapPct;
+        speedUpThreshold = _speedUpThreshold;
+        speedUpDuration = _speedUpDuration;
         joe = _joe;
         veJoe = _veJoe;
-        baseGenerationRate = _baseGenerationRate;
-        boostedGenerationRate = _boostedGenerationRate;
-        boostedThreshold = _boostedThreshold;
-        // TODO: Align on what the upper limit of boostedDuration should be and add require check
-        boostedDuration = _boostedDuration;
-        PRECISION = 1e18;
+        veJoePerSharePerSec = _veJoePerSharePerSec;
+        speedUpVeJoePerSharePerSec = _speedUpVeJoePerSharePerSec;
+        lastRewardTimestamp = block.timestamp;
+        ACC_VEJOE_PER_SHARE_PRECISION = 1e18;
+        VEJOE_PER_SHARE_PER_SEC_PRECISION = 1e18;
     }
 
-    /// @notice Set maxCap
-    /// @param _maxCap The new maxCap
-    function setMaxCap(uint256 _maxCap) external onlyOwner {
-        require(_maxCap > maxCap, "VeJoeStaking: expected new _maxCap to be greater than existing maxCap");
-        // TODO: Align on what the upper limit of maxCap should be
+    /// @notice Set maxCapPct
+    /// @param _maxCapPct The new maxCapPct
+    function setMaxCapPct(uint256 _maxCapPct) external onlyOwner {
+        require(_maxCapPct > maxCapPct, "VeJoeStaking: expected new _maxCapPct to be greater than existing maxCapPct");
         require(
-            _maxCap > 0 && _maxCap <= 100000,
-            "VeJoeStaking: expected new _maxCap to be greater than 0 and leq to 100000"
+            _maxCapPct != 0 && _maxCapPct <= upperLimitMaxCapPct,
+            "VeJoeStaking: expected new _maxCapPct to be non-zero and <= 10000000"
         );
-        maxCap = _maxCap;
-        emit UpdateMaxCap(msg.sender, _maxCap);
+        maxCapPct = _maxCapPct;
+        emit UpdateMaxCapPct(_msgSender(), _maxCapPct);
     }
 
-    /// @notice Set baseGenerationRate
-    /// @param _baseGenerationRate The new baseGenerationRate
-    function setBaseGenerationRate(uint256 _baseGenerationRate) external onlyOwner {
+    /// @notice Set veJoePerSharePerSec
+    /// @param _veJoePerSharePerSec The new veJoePerSharePerSec
+    function setVeJoePerSharePerSec(uint256 _veJoePerSharePerSec) external onlyOwner {
         require(
-            _baseGenerationRate < boostedGenerationRate,
-            "VeJoeStaking: expected new _baseGenerationRate to be less than boostedGenerationRate"
+            _veJoePerSharePerSec <= upperLimitVeJoePerSharePerSec,
+            "VeJoeStaking: expected _veJoePerSharePerSec to be <= 1e36"
         );
-        baseGenerationRate = _baseGenerationRate;
-        emit UpdateBaseGenerationRate(msg.sender, _baseGenerationRate);
+        updateRewardVars();
+        veJoePerSharePerSec = _veJoePerSharePerSec;
+        emit UpdateVeJoePerSharePerSec(_msgSender(), _veJoePerSharePerSec);
     }
 
-    /// @notice Set boostedGenerationRate
-    /// @param _boostedGenerationRate The new boostedGenerationRate
-    function setBoostedGenerationRate(uint256 _boostedGenerationRate) external onlyOwner {
+    /// @notice Set speedUpThreshold
+    /// @param _speedUpThreshold The new speedUpThreshold
+    function setSpeedUpThreshold(uint256 _speedUpThreshold) external onlyOwner {
         require(
-            _boostedGenerationRate > baseGenerationRate,
-            "VeJoeStaking: expected new _boostedGenerationRate to be greater than baseGenerationRate"
+            _speedUpThreshold != 0 && _speedUpThreshold <= 100,
+            "VeJoeStaking: expected _speedUpThreshold to be > 0 and <= 100"
         );
-        boostedGenerationRate = _boostedGenerationRate;
-        emit UpdateBoostedGenerationRate(msg.sender, _boostedGenerationRate);
-    }
-
-    /// @notice Set boostedThreshold
-    /// @param _boostedThreshold The new boostedThreshold
-    function setBoostedThreshold(uint256 _boostedThreshold) external onlyOwner {
-        require(
-            _boostedThreshold <= 100,
-            "VeJoeStaking: expected new _boostedThreshold to be less than or equal to 100"
-        );
-        boostedThreshold = _boostedThreshold;
-        emit UpdateBoostedThreshold(msg.sender, _boostedThreshold);
-    }
-
-    /// @notice Set boostedDuration
-    /// @param _boostedDuration The new boostedDuration
-    function setBoostedDuration(uint256 _boostedDuration) external onlyOwner {
-        boostedDuration = _boostedDuration;
-        emit UpdateBoostedDuration(msg.sender, _boostedDuration);
+        speedUpThreshold = _speedUpThreshold;
+        emit UpdateSpeedUpThreshold(_msgSender(), _speedUpThreshold);
     }
 
     /// @notice Deposits JOE to start staking for veJOE. Note that any pending veJOE
@@ -165,37 +196,38 @@ contract VeJoeStaking is Initializable, OwnableUpgradeable {
     function deposit(uint256 _amount) external {
         require(_amount > 0, "VeJoeStaking: expected deposit amount to be greater than zero");
 
-        UserInfo storage userInfo = userInfos[msg.sender];
+        updateRewardVars();
 
-        if (_getUserHasNonZeroBalance(msg.sender)) {
-            // If user already has staked JOE, we first send them any pending veJOE
+        UserInfo storage userInfo = userInfos[_msgSender()];
+
+        if (_getUserHasNonZeroBalance(_msgSender())) {
+            // Transfer to the user their pending veJOE before updating their UserInfo
             _claim();
+
+            // We need to update user's `lastClaimTimestamp` to now to prevent
+            // passive veJOE accrual if user hit their max cap.
+            userInfo.lastClaimTimestamp = block.timestamp;
 
             uint256 userStakedJoe = userInfo.balance;
 
-            userInfo.balance = userStakedJoe.add(_amount);
-
-            // User is eligible for boosted benefits if and only if all of the following are true:
-            // - User is not already currently receiving boosted benefits
-            // - `_amount` is at least `boostedThreshold / 100 * userStakedJoe`
-            if (userInfo.boostEndTimestamp == 0 && _amount.mul(100) >= boostedThreshold.mul(userStakedJoe)) {
-                userInfo.boostEndTimestamp = block.timestamp.add(boostedDuration);
+            // User is eligible for speed up benefits if `_amount` is at least
+            // `speedUpThreshold / 100 * userStakedJoe`
+            if (_amount.mul(100) >= speedUpThreshold.mul(userStakedJoe)) {
+                userInfo.speedUpEndTimestamp = block.timestamp.add(speedUpDuration);
             }
         } else {
-            // If the user's `lastRewardTimestamp` is 0, i.e. if this is the user's first time staking,
-            // then they will receive boosted benefits.
-            // Note that it is important we perform this check **before** we update the user's `lastRewardTimestamp`
-            // down below.
-            if (userInfo.lastRewardTimestamp == 0) {
-                userInfo.boostEndTimestamp = block.timestamp.add(boostedDuration);
-            }
-            userInfo.balance = _amount;
-            userInfo.lastRewardTimestamp = block.timestamp;
+            // If user is depositing with zero balance, they will automatically
+            // receive speed up benefits
+            userInfo.speedUpEndTimestamp = block.timestamp.add(speedUpDuration);
+            userInfo.lastClaimTimestamp = block.timestamp;
         }
 
-        joe.safeTransferFrom(msg.sender, address(this), _amount);
+        userInfo.balance = userInfo.balance.add(_amount);
+        userInfo.rewardDebt = accVeJoePerShare.mul(userInfo.balance).div(ACC_VEJOE_PER_SHARE_PRECISION);
 
-        emit Deposit(msg.sender, _amount);
+        joe.safeTransferFrom(_msgSender(), address(this), _amount);
+
+        emit Deposit(_msgSender(), _amount);
     }
 
     /// @notice Withdraw staked JOE. Note that unstaking any amount of JOE means you will
@@ -204,30 +236,34 @@ contract VeJoeStaking is Initializable, OwnableUpgradeable {
     function withdraw(uint256 _amount) external {
         require(_amount > 0, "VeJoeStaking: expected withdraw amount to be greater than zero");
 
-        UserInfo storage userInfo = userInfos[msg.sender];
+        UserInfo storage userInfo = userInfos[_msgSender()];
 
         require(
             userInfo.balance >= _amount,
             "VeJoeStaking: cannot withdraw greater amount of JOE than currently staked"
         );
+        updateRewardVars();
 
+        // Note that we don't need to claim as the user's veJOE balance will be reset to 0
         userInfo.balance = userInfo.balance.sub(_amount);
-        userInfo.lastRewardTimestamp = block.timestamp;
-        userInfo.boostEndTimestamp = 0;
+        userInfo.rewardDebt = accVeJoePerShare.mul(userInfo.balance).div(ACC_VEJOE_PER_SHARE_PRECISION);
+        userInfo.lastClaimTimestamp = block.timestamp;
+        userInfo.speedUpEndTimestamp = 0;
 
         // Burn the user's current veJOE balance
-        uint256 userVeJoeBalance = veJoe.balanceOf(msg.sender);
-        veJoe.burnFrom(msg.sender, userVeJoeBalance);
+        uint256 userVeJoeBalance = veJoe.balanceOf(_msgSender());
+        veJoe.burnFrom(_msgSender(), userVeJoeBalance);
 
         // Send user their requested amount of staked JOE
-        joe.safeTransfer(msg.sender, _amount);
+        joe.safeTransfer(_msgSender(), _amount);
 
-        emit Withdraw(msg.sender, _amount);
+        emit Withdraw(_msgSender(), _amount, userVeJoeBalance);
     }
 
     /// @notice Claim any pending veJOE
     function claim() external {
-        require(_getUserHasNonZeroBalance(msg.sender), "VeJoeStaking: cannot claim veJOE when no JOE is staked");
+        require(_getUserHasNonZeroBalance(_msgSender()), "VeJoeStaking: cannot claim veJOE when no JOE is staked");
+        updateRewardVars();
         _claim();
     }
 
@@ -241,76 +277,69 @@ contract VeJoeStaking is Initializable, OwnableUpgradeable {
 
         UserInfo memory user = userInfos[_user];
 
-        uint256 secondsElapsed = block.timestamp.sub(user.lastRewardTimestamp);
-        if (secondsElapsed == 0) {
-            return 0;
+        // Calculate amount of pending base veJOE
+        uint256 _accVeJoePerShare = accVeJoePerShare;
+        uint256 secondsElapsed = block.timestamp.sub(lastRewardTimestamp);
+        if (secondsElapsed > 0) {
+            _accVeJoePerShare = _accVeJoePerShare.add(
+                secondsElapsed.mul(veJoePerSharePerSec).mul(ACC_VEJOE_PER_SHARE_PRECISION).div(
+                    VEJOE_PER_SHARE_PER_SEC_PRECISION
+                )
+            );
+        }
+        uint256 pendingBaseVeJoe = _accVeJoePerShare.mul(user.balance).div(ACC_VEJOE_PER_SHARE_PRECISION).sub(
+            user.rewardDebt
+        );
+
+        // Calculate amount of pending speed up veJOE
+        uint256 pendingSpeedUpVeJoe;
+        if (user.speedUpEndTimestamp != 0) {
+            uint256 speedUpCeilingTimestamp = block.timestamp > user.speedUpEndTimestamp
+                ? user.speedUpEndTimestamp
+                : block.timestamp;
+            uint256 speedUpSecondsElapsed = speedUpCeilingTimestamp.sub(user.lastClaimTimestamp);
+            uint256 speedUpAccVeJoePerShare = speedUpSecondsElapsed.mul(speedUpVeJoePerSharePerSec);
+            pendingSpeedUpVeJoe = speedUpAccVeJoePerShare.mul(user.balance).div(VEJOE_PER_SHARE_PER_SEC_PRECISION);
         }
 
-        // Calculate amount of pending veJOE based on:
-        // 1. Seconds elapsed since last reward timestamp
-        // 2. Generation rate that the user is receiving
-        // 3. Current amount of user's staked JOE
-        uint256 pendingVeJoe;
+        uint256 pendingVeJoe = pendingBaseVeJoe.add(pendingSpeedUpVeJoe);
 
-        if (block.timestamp <= user.boostEndTimestamp) {
-            // If the current timestamp is less than or equal to the user's `boostEndTimestamp`,
-            // that means the user is currently receiving boosted benefits so they should receive
-            // `boostedGenerationRate`.
-            uint256 accVeJoePerJoe = secondsElapsed.mul(boostedGenerationRate);
-            pendingVeJoe = accVeJoePerJoe.mul(user.balance).div(PRECISION);
-        } else {
-            if (user.boostEndTimestamp != 0) {
-                // If `user.boostEndTimestamp != 0` then, we know for certain that
-                // `user.boostEndTimestamp >= user.lastRewardTimestamp`.
-                // Proof by contradiction:
-                // 1. Assume that `user.boostEndTimestamp != 0` and
-                //    `user.boostEndTimestamp < user.lastRewardTimestamp`.
-                // 2. That means that at time `user.lastRewardTimestamp`, the user claimed
-                //    some veJOE. Furthermore, we know that anytime a user claims some veJOE,
-                //    if the current timestamp is greater than or equal to `user.boostEndTimestamp`,
-                //    we will update `user.boostEndTimestamp` to be `0` (see `_claim` method).
-                // 3. This means that `user.boostEndTimestamp` should be `0` but that contradicts our
-                //    assumption that `user.boostEndTimestamp != 0`
-                // QED.
-                // With this, we now know `0 < user.lastRewardTimestamp <= user.boostEndTimestamp < block.timestamp`,
-                // which will allow us to perform the following logic safely.
-
-                // If the `block.timestamp > user.boostEndTimestamp` and `boostEndTimestamp != 0`,
-                // that means the user's boosted benefits ended sometime between their `lastRewardTimestamp`
-                // and now.
-                // In this case, we need to properly provide them the boosted generation rate for
-                // those `boostEndTimestamp - lastRewardTimestamp` seconds.
-                uint256 boostedTimeElapsed = user.boostEndTimestamp.sub(user.lastRewardTimestamp);
-                uint256 boostedAccVeJoePerJoe = boostedTimeElapsed.mul(boostedGenerationRate);
-                uint256 boostedPendingVeJoe = boostedAccVeJoePerJoe.mul(user.balance);
-
-                uint256 baseTimeElapsed = block.timestamp.sub(user.boostEndTimestamp);
-                uint256 baseAccVeJoePerVeJoe = baseTimeElapsed.mul(baseGenerationRate);
-                uint256 basePendingVeJoe = baseAccVeJoePerVeJoe.mul(user.balance);
-
-                pendingVeJoe = boostedPendingVeJoe.add(basePendingVeJoe).div(PRECISION);
-            } else {
-                // In this case, the user is simply generating veJOE at `baseGenerationRate` for
-                // the duration of `secondsElapsed`.
-                uint256 accVeJoePerJoe = secondsElapsed.mul(baseGenerationRate);
-                pendingVeJoe = accVeJoePerJoe.mul(user.balance).div(PRECISION);
-            }
-        }
-
-        // Get the user's current veJOE balance and maximum veJOE they can hold
+        // Get the user's current veJOE balance
         uint256 userVeJoeBalance = veJoe.balanceOf(_user);
-        uint256 userMaxVeJoeCap = user.balance.mul(maxCap);
 
-        if (userVeJoeBalance < userMaxVeJoeCap) {
-            if (userVeJoeBalance.add(pendingVeJoe) > userMaxVeJoeCap) {
-                return userMaxVeJoeCap.sub(userVeJoeBalance);
-            } else {
-                return pendingVeJoe;
-            }
-        } else {
+        // This is the user's max veJOE cap multiplied by 100
+        uint256 scaledUserMaxVeJoeCap = user.balance.mul(maxCapPct);
+
+        if (userVeJoeBalance.mul(100) >= scaledUserMaxVeJoeCap) {
             // User already holds maximum amount of veJOE so there is no pending veJOE
             return 0;
+        } else if (userVeJoeBalance.add(pendingVeJoe).mul(100) > scaledUserMaxVeJoeCap) {
+            return scaledUserMaxVeJoeCap.sub(userVeJoeBalance.mul(100)).div(100);
+        } else {
+            return pendingVeJoe;
         }
+    }
+
+    /// @notice Update reward variables
+    function updateRewardVars() public {
+        if (block.timestamp <= lastRewardTimestamp) {
+            return;
+        }
+
+        if (joe.balanceOf(address(this)) == 0) {
+            lastRewardTimestamp = block.timestamp;
+            return;
+        }
+
+        uint256 secondsElapsed = block.timestamp.sub(lastRewardTimestamp);
+        accVeJoePerShare = accVeJoePerShare.add(
+            secondsElapsed.mul(veJoePerSharePerSec).mul(ACC_VEJOE_PER_SHARE_PRECISION).div(
+                VEJOE_PER_SHARE_PER_SEC_PRECISION
+            )
+        );
+        lastRewardTimestamp = block.timestamp;
+
+        emit UpdateRewardVars(lastRewardTimestamp, accVeJoePerShare);
     }
 
     /// @notice Checks to see if a given user currently has staked JOE
@@ -322,21 +351,22 @@ contract VeJoeStaking is Initializable, OwnableUpgradeable {
 
     /// @dev Helper to claim any pending veJOE
     function _claim() private {
-        uint256 veJoeToClaim = getPendingVeJoe(msg.sender);
+        uint256 veJoeToClaim = getPendingVeJoe(_msgSender());
+
+        UserInfo storage userInfo = userInfos[_msgSender()];
+
+        userInfo.rewardDebt = accVeJoePerShare.mul(userInfo.balance).div(ACC_VEJOE_PER_SHARE_PRECISION);
+
+        // If user's speed up period has ended, reset `speedUpEndTimestamp` to 0
+        if (userInfo.speedUpEndTimestamp != 0 && block.timestamp >= userInfo.speedUpEndTimestamp) {
+            userInfo.speedUpEndTimestamp = 0;
+        }
 
         if (veJoeToClaim > 0) {
-            UserInfo storage userInfo = userInfos[msg.sender];
+            userInfo.lastClaimTimestamp = block.timestamp;
 
-            // Update user's last reward timestamp
-            userInfo.lastRewardTimestamp = block.timestamp;
-
-            // If user's boost period has ended, reset `boostEndTimestamp` to 0
-            if (userInfo.boostEndTimestamp != 0 && block.timestamp >= userInfo.boostEndTimestamp) {
-                userInfo.boostEndTimestamp = 0;
-            }
-
-            veJoe.mint(msg.sender, veJoeToClaim);
-            emit Claim(msg.sender, veJoeToClaim);
+            veJoe.mint(_msgSender(), veJoeToClaim);
+            emit Claim(_msgSender(), veJoeToClaim);
         }
     }
 }
