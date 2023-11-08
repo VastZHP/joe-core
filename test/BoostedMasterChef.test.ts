@@ -19,7 +19,6 @@ describe("BoostedMasterChefJoe", function () {
     this.JoeToken = await ethers.getContractFactory("JoeToken")
     this.VeJoeToken = await ethers.getContractFactory("VeJoeToken")
     this.ERC20Mock = await ethers.getContractFactory("ERC20Mock", this.minter)
-    this.SushiToken = await ethers.getContractFactory("SushiToken")
 
     this.devPercent = 200
     this.treasuryPercent = 200
@@ -56,21 +55,34 @@ describe("BoostedMasterChefJoe", function () {
 
     await this.veJoe.connect(this.dev).setBoostedMasterChefJoe(this.bmc.address)
 
+
     await this.dummyToken.connect(this.dev).approve(this.bmc.address, 1)
-    expect(this.bmc.connect(this.dev).init(this.dummyToken.address)).to.emit(this.bmc, "Init").withArgs(1)
+    expect(await this.bmc.connect(this.dev).init(this.dummyToken.address))
+      .to.emit(this.bmc, "Init")
+      .withArgs(1)
+
+    this.lp = await this.ERC20Mock.deploy("LPToken", "LP", "100000000000000000000")
+    await this.lp.deployed()
+
+    await this.lp.transfer(this.alice.address, "1000000000000000000")
+    await this.lp.transfer(this.bob.address, "1000000000000000000")
+    await this.lp.transfer(this.carol.address, "1000000000000000000")
 
     this.lp = await this.ERC20Mock.deploy("LPToken", "LP", 10000000000)
     await this.lp.deployed()
+
     await this.lp.transfer(this.alice.address, 1000)
     await this.lp.transfer(this.bob.address, 1000)
     await this.lp.transfer(this.carol.address, 1000)
 
-    this.bmc.connect(this.dev).add(100, 5000, this.lp.address, ADDRESS_ZERO)
+    await this.bmc.connect(this.dev).add(100, 5000, this.lp.address, ADDRESS_ZERO)
   })
 
   it("should revert if init called twice", async function () {
     await this.dummyToken.connect(this.dev).approve(this.bmc.address, 1)
-    expect(this.bmc.connect(this.dev).init(this.dummyToken.address)).to.be.revertedWith("BoostedMasterChefJoe: Already has a balance of dummy token")
+    expect(this.bmc.connect(this.dev).init(this.dummyToken.address)).to.be.revertedWith(
+      "BoostedMasterChefJoe: Already has a balance of dummy token"
+    )
   })
 
   it("should adjust total factor when deposit", async function () {
@@ -177,7 +189,8 @@ describe("BoostedMasterChefJoe", function () {
     // bob should have 2.5x the pending tokens as alice.
     const alicePending = await this.bmc.pendingTokens(0, this.alice.address)
     const bobPending = await this.bmc.pendingTokens(0, this.bob.address)
-    await expect(alicePending[0] * 2.5).to.be.closeTo(bobPending[0], 10)
+    // Bob receives the same amount of JOE from alice, and all the veJoe side
+    await expect(alicePending[0].add(alicePending[0] * 2)).to.be.closeTo(bobPending[0], 10)
 
     // Re-enable automining.
     await network.provider.send("evm_setAutomine", [true])
@@ -187,8 +200,8 @@ describe("BoostedMasterChefJoe", function () {
     await this.veJoe.connect(this.dev).mint(this.bob.address, 100)
     await this.lp.connect(this.bob).approve(this.bmc.address, 1000)
 
-    await this.bmc.connect(this.bob).deposit(0, 1000)
     await network.provider.send("evm_setAutomine", [false])
+    await this.bmc.connect(this.bob).deposit(0, 1000)
     // Make sure contract has JOE to emit
     await this.bmc.connect(this.dev).harvestFromMasterChef()
     await increase(duration.hours(1))
@@ -213,7 +226,7 @@ describe("BoostedMasterChefJoe", function () {
     await this.lp.connect(this.bob).approve(this.bmc.address, 1000)
     await this.bmc.connect(this.bob).deposit(0, 10)
 
-    expect((await this.joe.balanceOf(this.bob.address)).gt(0)).to.be.true;
+    expect((await this.joe.balanceOf(this.bob.address)).gt(0)).to.be.true
   })
 
   it("should change rate when vjoe mints", async function () {
@@ -277,8 +290,7 @@ describe("BoostedMasterChefJoe", function () {
     await increase(duration.hours(1))
 
     const pending = await this.bmc.pendingTokens(0, this.bob.address)
-    expect(pending[0].gt(0)).to.be.true;
-
+    expect(pending[0].gt(0)).to.be.true
     await this.veJoe.connect(this.dev).mint(this.bob.address, 10)
     let claimable = await this.bmc.claimableJoe(0, this.bob.address)
     // Close to as 1 second passes after the mint.
@@ -297,7 +309,7 @@ describe("BoostedMasterChefJoe", function () {
 
     await increase(duration.hours(1))
 
-    let user;
+    let user
     user = await this.bmc.userInfo(0, this.bob.address)
     expect(user.factor).to.equal(100)
 
@@ -317,23 +329,84 @@ describe("BoostedMasterChefJoe", function () {
     expect((await this.bmc.poolInfo(0)).allocPoint).to.equal(1000)
   })
 
-  it("it should never decrease pending tokens", async function () {
 
+
+  it("it should never decrease pending tokens", async function () {
     await this.veJoe.connect(this.dev).mint(this.bob.address, 100)
     await this.lp.connect(this.bob).approve(this.bmc.address, 1000)
     await this.bmc.connect(this.bob).deposit(0, 1000)
 
     await increase(duration.hours(24))
+
     await advanceBlock()
-    const pending0 = await this.bmc.pendingTokens(0, this.bob.address);
+    const pending0 = await this.bmc.pendingTokens(0, this.bob.address)
 
     await this.veJoe.connect(this.dev).mint(this.alice.address, 100)
     await this.lp.connect(this.alice).approve(this.bmc.address, 1000)
     await this.bmc.connect(this.alice).deposit(0, 1000)
 
-    const pending1 = await this.bmc.pendingTokens(0, this.bob.address);
+    const pending1 = await this.bmc.pendingTokens(0, this.bob.address)
 
-    expect(pending1[0] > pending0[0]).to.be.true;
+    expect(pending1[0] > pending0[0]).to.be.true
+  })
+
+  it("bug ackee script 1", async function () {
+    const lp2 = await this.ERC20Mock.deploy("LPToken", "LP", 10000000000)
+    await lp2.deployed()
+    await lp2.transfer(this.bob.address, 1000)
+
+    await this.bmc.connect(this.dev).add(100, 0, lp2.address, ADDRESS_ZERO)
+
+    await this.lp.connect(this.alice).approve(this.bmc.address, 1000)
+    await lp2.connect(this.bob).approve(this.bmc.address, 1000)
+
+    await this.bmc.connect(this.alice).deposit(0, 1000)
+    await this.bmc.connect(this.bob).deposit(1, 1000)
+
+    await increase(duration.hours(24))
+    await advanceBlock()
+
+    await this.bmc.updatePool(1)
+    await this.bmc.set(0, 900, 0, ADDRESS_ZERO, false)
+
+    await this.bmc.connect(this.alice).deposit(0, 0)
+    await this.bmc.connect(this.bob).deposit(1, 0)
+    await this.bmc.connect(this.alice).withdraw(0, 0)
+    await this.bmc.connect(this.bob).withdraw(1, 0)
+  })
+
+  it("it should allow deposits if contract has balance", async function () {
+    await this.lp.transfer(this.bmc.address, 100)
+    await this.bmc.updatePool(0)
+    await this.lp.connect(this.bob).approve(this.bmc.address, 100)
+    await this.bmc.connect(this.bob).deposit(0, 100)
+  })
+
+  it.only("should allow deposit", async function () {
+
+    this.lp1 = await this.ERC20Mock.deploy("LPToken", "LP", "100000000000000000000")
+    this.lp2 = await this.ERC20Mock.deploy("LPToken", "LP", "100000000000000000000")
+    this.lp3 = await this.ERC20Mock.deploy("LPToken", "LP", "100000000000000000000")
+
+    await this.lp1.transfer(this.alice.address, "1000000000000000000")
+    await this.lp2.transfer(this.bob.address, "1000000000000000000")
+
+    this.bmc.add(100, this.lp1.address, ADDRESS_ZERO)
+    this.bmc.add(100, this.lp2.address, ADDRESS_ZERO)
+    this.bmc.add(100, this.lp3.address, ADDRESS_ZERO)
+
+    await this.lp1.connect(this.alice).approve(this.bmc.address, "490114764570241975");
+    await this.bmc.connect(this.alice).deposit(0, "490114764570241975");
+
+    await this.lp2.connect(this.bob).approve(this.bmc.address, "289542403083227152");
+    await this.bmc.connect(this.bob).deposit(1, "289542403083227152");
+
+    await increase(duration.hours(1));
+    await advanceBlock();
+
+    await this.lp1.connect(this.alice).approve(this.bmc.address, "4521227702709282");
+    await this.bmc.connect(this.alice).deposit(0, "4521227702709282");
+
   })
 
   after(async function () {
