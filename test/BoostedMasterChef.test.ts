@@ -19,7 +19,6 @@ describe("BoostedMasterChefJoe", function () {
     this.JoeToken = await ethers.getContractFactory("JoeToken")
     this.VeJoeToken = await ethers.getContractFactory("VeJoeToken")
     this.ERC20Mock = await ethers.getContractFactory("ERC20Mock", this.minter)
-    this.SushiToken = await ethers.getContractFactory("SushiToken")
 
     this.devPercent = 200
     this.treasuryPercent = 200
@@ -60,6 +59,13 @@ describe("BoostedMasterChefJoe", function () {
     expect(await this.bmc.connect(this.dev).init(this.dummyToken.address))
       .to.emit(this.bmc, "Init")
       .withArgs(1)
+
+    this.lp = await this.ERC20Mock.deploy("LPToken", "LP", "100000000000000000000")
+    await this.lp.deployed()
+
+    await this.lp.transfer(this.alice.address, "1000000000000000000")
+    await this.lp.transfer(this.bob.address, "1000000000000000000")
+    await this.lp.transfer(this.carol.address, "1000000000000000000")
 
     this.lp = await this.ERC20Mock.deploy("LPToken", "LP", 10000000000)
     await this.lp.deployed()
@@ -370,6 +376,32 @@ describe("BoostedMasterChefJoe", function () {
     await this.bmc.updatePool(0)
     await this.lp.connect(this.bob).approve(this.bmc.address, 100)
     await this.bmc.connect(this.bob).deposit(0, 100)
+  })
+
+  it.only("should allow deposit", async function () {
+
+    this.lp1 = await this.ERC20Mock.deploy("LPToken", "LP", "100000000000000000000")
+    this.lp2 = await this.ERC20Mock.deploy("LPToken", "LP", "100000000000000000000")
+    this.lp3 = await this.ERC20Mock.deploy("LPToken", "LP", "100000000000000000000")
+
+    await this.lp1.transfer(this.alice.address, "1000000000000000000")
+    await this.lp2.transfer(this.bob.address, "1000000000000000000")
+
+    this.bmc.add(100, this.lp1.address, ADDRESS_ZERO)
+    this.bmc.add(100, this.lp2.address, ADDRESS_ZERO)
+    this.bmc.add(100, this.lp3.address, ADDRESS_ZERO)
+
+    await this.lp1.connect(this.alice).approve(this.bmc.address, "490114764570241975");
+    await this.bmc.connect(this.alice).deposit(0, "490114764570241975");
+
+    await this.lp2.connect(this.bob).approve(this.bmc.address, "289542403083227152");
+    await this.bmc.connect(this.bob).deposit(1, "289542403083227152");
+
+    await increase(duration.hours(1));
+    await advanceBlock();
+
+    await this.lp1.connect(this.alice).approve(this.bmc.address, "4521227702709282");
+    await this.bmc.connect(this.alice).deposit(0, "4521227702709282");
   })
 
   after(async function () {
